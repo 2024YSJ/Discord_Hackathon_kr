@@ -229,3 +229,4 @@ Hack the 6ix
 Global Hack Week: Season Launch
 Spark- 2 HackIndia EIT 2026
 🇰🇷 [데브이벤트] 피싱·스캠 예방을 위한 서비스 개발 경진대회
+CAD-Vantage
