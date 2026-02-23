@@ -186,49 +186,79 @@ class HackathonBot:
         except: return []
 
     def fetch_kaggle(self):
-        # Kaggle은 클라이언트 사이드 렌더링으로 window.Kaggle.State가 더 이상 존재하지 않음
-        # __NEXT_DATA__ 또는 JSON-LD 방식 시도
+        """Kaggle 공식 API (KAGGLE_USERNAME + KAGGLE_KEY 환경변수 필요)"""
+        username = os.environ.get('KAGGLE_USERNAME')
+        key = os.environ.get('KAGGLE_KEY')
+        if not username or not key:
+            return []
         try:
-            url = "https://www.kaggle.com/competitions?hostSegmentIdFilter=8"
-            res = requests.get(url, headers=self.headers, timeout=15)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            # Next.js 데이터 시도
-            script = soup.find('script', id='__NEXT_DATA__')
-            if script:
-                data = json.loads(script.string)
-                items = data.get('props', {}).get('pageProps', {}).get('competitions', [])
-                return [{"title": i['title'], "url": f"https://www.kaggle.com/c/{i.get('ref', i.get('id', ''))}", "host": "Kaggle", "date": i.get('deadline', 'N/A')} for i in items if i.get('title')]
-            # JSON-LD 구조화 데이터 시도
-            for s in soup.find_all('script', type='application/ld+json'):
-                try:
-                    ld = json.loads(s.string)
-                    if isinstance(ld, list):
-                        return [{"title": e.get('name', ''), "url": e.get('url', ''), "host": "Kaggle", "date": e.get('endDate', 'N/A')} for e in ld if e.get('name')]
-                except: continue
-        except: pass
+            today = datetime.now().strftime('%Y-%m-%d')
+            res = requests.get(
+                'https://www.kaggle.com/api/v1/competitions/list',
+                params={'sortBy': 'latestDeadline', 'pageSize': 20},
+                auth=(username, key),
+                headers=self.headers, timeout=15
+            )
+            if res.status_code == 200:
+                results = []
+                for c in res.json():
+                    title = c.get('title', '')
+                    deadline = (c.get('deadline') or '')[:10]
+                    if not title or (deadline and deadline < today):
+                        continue
+                    ref = c.get('ref') or c.get('id', '')
+                    results.append({
+                        "title": title,
+                        "url": f"https://www.kaggle.com/competitions/{ref}",
+                        "host": "Kaggle",
+                        "date": deadline or "상세 확인"
+                    })
+                return results
+        except Exception as e:
+            print(f"Kaggle 크롤링 예외: {e}")
         return []
 
     def fetch_hack2skill(self):
-        # api.hack2skill.com 도메인이 존재하지 않음 → 대체 엔드포인트 시도
+        """Hack2Skill 홈페이지 flagship 이벤트 파싱 (서버사이드 렌더링)"""
         try:
-            for url in [
-                "https://hack2skill.com/api/v1/hackathons?status=upcoming",
-                "https://hack2skill.com/api/hackathons",
-            ]:
-                res = requests.get(url, headers=self.headers, timeout=10)
-                if res.status_code == 200:
-                    try:
-                        items = res.json()
-                        if isinstance(items, dict):
-                            items = items.get('data', items.get('hackathons', []))
-                        if isinstance(items, list) and items and isinstance(items[0], dict):
-                            return [{"title": h.get('name') or h.get('title', ''),
-                                     "url": f"https://hack2skill.com/hackathon/{h.get('slug', h.get('id', ''))}",
-                                     "host": "Hack2Skill",
-                                     "date": (h.get('start_date') or h.get('startDate') or 'N/A')[:10]}
-                                    for h in items if h.get('slug') or h.get('id')]
-                    except Exception:
-                        pass
+            res = requests.get('https://hack2skill.com/', headers=self.headers, timeout=15)
+            if res.status_code != 200:
+                return []
+            soup = BeautifulSoup(res.text, 'html.parser')
+            flagship = soup.find(class_='flagshipEventsSlider')
+            if not flagship:
+                return []
+            today = datetime.now()
+            results = []
+            seen = set()
+            for a in flagship.find_all('a', href=re.compile(r'hack2skill\.com')):
+                url = a['href'].split('?')[0]
+                if url in seen:
+                    continue
+                card = a.find_parent('div', class_=re.compile(r'w-\[16rem\]'))
+                if not card:
+                    continue
+                h5s = card.find_all('h5')
+                if not h5s:
+                    continue
+                title = h5s[0].get_text(strip=True)
+                if not title:
+                    continue
+                date_str = h5s[-1].get_text(strip=True) if len(h5s) > 1 else ''
+                try:
+                    event_date = datetime.strptime(date_str, '%a %b %d %Y')
+                    if event_date < today:
+                        continue
+                except ValueError:
+                    pass
+                seen.add(url)
+                results.append({
+                    "title": title,
+                    "url": url,
+                    "host": "Hack2Skill",
+                    "date": date_str
+                })
+            return results
         except Exception as e:
             print(f"Hack2Skill 크롤링 예외: {e}")
         return []
