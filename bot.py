@@ -51,15 +51,19 @@ class HackathonBot:
 
     def fetch_mlh(self):
         try:
-            year = datetime.now().year
-            url = f"https://mlh.io/api/v1/hackathons?year={year}"
+            # 연도를 특정하지 않고 전체 목록을 가져온 뒤 현재 시점 데이터만 추출
+            url = "https://mlh.io/api/v1/hackathons" 
             res = requests.get(url, headers=self.headers, timeout=15)
             if res.status_code == 200:
                 data = res.json()
                 now_str = datetime.now().strftime('%Y-%m-%d')
-                return [{"title": h['name'], "url": h['url'], "host": "MLH", "date": h['start_date']} for h in data if h.get('start_date', '') >= now_str][:10]
+                # 시작일이 현재보다 미래인 것만 필터링
+                upcoming = [h for h in data if h.get('start_date', '') >= now_str]
+                return [{"title": h['name'], "url": h['url'], "host": "MLH", "date": h['start_date']} for h in upcoming]
             return []
-        except: return []
+        except Exception as e:
+            print(f"MLH Error: {e}")
+            return []
 
     def fetch_devfolio(self):
         try:
@@ -95,20 +99,36 @@ class HackathonBot:
 
     def fetch_kaggle(self):
         try:
-            kaggle_headers = self.base_headers.copy()
-            kaggle_headers.update({"Referer": "https://www.kaggle.com/competitions", "X-Requested-With": "XMLHttpRequest"})
+            # Kaggle은 위조된 헤더가 매우 중요합니다.
+            kaggle_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Accept": "application/json",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": "https://www.kaggle.com/competitions"
+            }
+            # 엔드포인트 파라미터 최신화
             url = "https://www.kaggle.com/api/i/competitions.CompetitionService/ListCompetitions"
-            res = requests.get(url, params={"category": "all", "listCompetitionsRequest.sort": "LATEST"}, headers=kaggle_headers, timeout=15)
+            params = {"category": "all", "listCompetitionsRequest.sort": "LATEST"}
+            
+            res = requests.get(url, params=params, headers=kaggle_headers, timeout=15)
             if res.status_code == 200:
                 items = res.json().get('competitions', [])
                 results = []
                 for i in items:
                     title = i.get('title', '')
-                    if any(k in title.lower() for k in ['hackathon', 'challenge']) or i.get('rewardType') == 'KNOWLEDGE':
-                        results.append({"title": title, "url": f"https://www.kaggle.com/c/{i.get('ref')}", "host": "Kaggle", "date": i.get('deadline', 'Ongoing').split('T')[0]})
-                return results[:10]
+                    # 상금/보상 체계가 'Knowledge'이거나 제목에 키워드가 있는 것 추출
+                    if any(k in title.lower() for k in ['hackathon', 'challenge']) or i.get('rewardTypeName') == 'Knowledge':
+                        results.append({
+                            "title": title, 
+                            "url": f"https://www.kaggle.com/c/{i.get('ref')}", 
+                            "host": "Kaggle", 
+                            "date": i.get('deadline', 'Ongoing').split('T')[0]
+                        })
+                return results
             return []
-        except: return []
+        except Exception as e:
+            print(f"Kaggle Error: {e}")
+            return []
 
     def fetch_hack2skill(self):
         try:
@@ -134,17 +154,19 @@ class HackathonBot:
         return results
 
     def fetch_linkareer(self):
-        results = []
+        """링커리어는 CSR 방식이라 일반 크롤링이 어려울 수 있어 API 경로로 시도"""
         try:
-            url = "https://linkareer.com/list/contest?filterType=category&filterValue=11"
-            res = requests.get(url, headers=self.headers, timeout=15)
+            # 실제 링커리어 공모전 리스트 API (비공식)
+            url = "https://api.linkareer.com/api/v1/posts"
+            params = {"filterType": "CATEGORY", "filterValue": "11", "pageSize": 10} # 11: IT/소프트웨어
+            res = requests.get(url, params=params, headers=self.headers, timeout=15)
             if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                for item in soup.find_all('h5'):
-                    if '해커톤' in item.text:
-                        results.append({"title": f"🇰🇷 [링커리어] {item.text.strip()}", "url": url, "host": "Linkareer", "date": "상세 확인"})
-        except: pass
-        return results
+                data = res.json().get('data', {}).get('posts', [])
+                return [{"title": f"🇰🇷 [링커리어] {p['title']}", "url": f"https://linkareer.com/activity/{p['id']}", "host": "Linkareer", "date": "상세확인"} for p in data if '해커톤' in p['title']]
+            return []
+        except Exception as e:
+            print(f"Linkareer Error: {e}")
+            return []
 
     def fetch_campuspick(self):
         results = []
