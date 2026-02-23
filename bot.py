@@ -260,10 +260,167 @@ class HackathonBot:
             print(f"Goorm 크롤링 예외: {e}")
         return []
 
+    def fetch_wevity(self):
+        """위비티 해커톤 공모전 목록 파싱 (서버사이드 렌더링)"""
+        try:
+            url = "https://www.wevity.com/?c=find&s=1&sp=contents&sw=%ED%95%B4%EC%BB%A4%ED%86%A4"
+            res = requests.get(url, headers=self.headers, timeout=15)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, 'html.parser')
+                results = []
+                ul = soup.find('ul', class_='list')
+                if not ul:
+                    return []
+                for li in ul.find_all('li'):
+                    if 'top' in li.get('class', []):
+                        continue
+                    # 마감된 항목 스킵 (dday span에 'end' 클래스)
+                    if li.find('span', class_='end'):
+                        continue
+                    tit_div = li.find('div', class_='tit')
+                    if not tit_div:
+                        continue
+                    a = tit_div.find('a', href=True)
+                    if not a:
+                        continue
+                    title = a.get_text(strip=True)
+                    if not title:
+                        continue
+                    href = a['href']
+                    full_url = "https://www.wevity.com/" + href if href.startswith('?') else href
+                    day_div = li.find('div', class_='day')
+                    date_str = day_div.get_text(separator=' ', strip=True) if day_div else "상세 확인"
+                    results.append({
+                        "title": f"🇰🇷 [위비티] {title}",
+                        "url": full_url,
+                        "host": "Wevity",
+                        "date": date_str
+                    })
+                return results
+        except Exception as e:
+            print(f"Wevity 크롤링 예외: {e}")
+        return []
+
+    def fetch_campuspick(self):
+        """캠퍼스픽 해커톤 공모전 목록"""
+        try:
+            headers = self.headers.copy()
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
+                "Referer": "https://www.campuspick.com/",
+            })
+            # campuspick.com은 www2로 리다이렉트됨
+            url = "https://www2.campuspick.com/contest?category=108&keyword=%ED%95%B4%EC%BB%A4%ED%86%A4"
+            res = requests.get(url, headers=headers, timeout=15)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, 'html.parser')
+                results = []
+                # 공모전 링크 패턴으로 항목 탐색
+                for a in soup.find_all('a', href=re.compile(r'/contest/\d+')):
+                    title_el = a.find(['h3', 'h4', 'h2', 'p', 'span'],
+                                       class_=re.compile(r'title|name|tit|subject'))
+                    title = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
+                    if not title:
+                        continue
+                    href = a['href']
+                    full_url = "https://www2.campuspick.com" + href if href.startswith('/') else href
+                    results.append({
+                        "title": f"🇰🇷 [캠퍼스픽] {title}",
+                        "url": full_url,
+                        "host": "CampusPick",
+                        "date": "상세 확인"
+                    })
+                return results
+        except Exception as e:
+            print(f"CampusPick 크롤링 예외: {e}")
+        return []
+
+    def fetch_aiconnect(self):
+        """AI Connect 대회 목록 (Nuxt.js, window.__NUXT__ 데이터 탐색)"""
+        try:
+            headers = self.headers.copy()
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ko-KR,ko;q=0.9",
+                "Referer": "https://aiconnect.kr/",
+            })
+            res = requests.get("https://aiconnect.kr/competition/list", headers=headers, timeout=15)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, 'html.parser')
+                results = []
+                for script in soup.find_all('script'):
+                    text = script.get_text()
+                    if '__NUXT__' not in text:
+                        continue
+                    m = re.search(r'window\.__NUXT__\s*=\s*(\{.+\})\s*;?\s*$', text, re.DOTALL)
+                    if not m:
+                        continue
+                    try:
+                        nuxt = json.loads(m.group(1))
+                        # 가능한 경로들 순서대로 탐색
+                        candidates = [
+                            nuxt.get('state', {}).get('competitions', []),
+                            nuxt.get('state', {}).get('items', []),
+                            nuxt.get('data', [{}])[0].get('competitions', []) if nuxt.get('data') else [],
+                        ]
+                        for comps in candidates:
+                            if not isinstance(comps, list) or not comps:
+                                continue
+                            for c in comps:
+                                if not isinstance(c, dict):
+                                    continue
+                                title = c.get('title') or c.get('name', '')
+                                cid = c.get('id') or c.get('competitionId', '')
+                                if title:
+                                    results.append({
+                                        "title": f"🇰🇷 [AI Connect] {title}",
+                                        "url": f"https://aiconnect.kr/competition/detail/{cid}",
+                                        "host": "AIConnect",
+                                        "date": c.get('endDate', '상세 확인')
+                                    })
+                            break
+                    except json.JSONDecodeError:
+                        pass
+                return results
+        except Exception as e:
+            print(f"AIConnect 크롤링 예외: {e}")
+        return []
+
+    def fetch_linkareer(self):
+        """링커리어 GraphQL API - 해커톤 활동 검색"""
+        try:
+            query = "{ activities { nodes { id title organizationName categories { name } createdAt } } }"
+            res = requests.post(
+                "https://api.linkareer.com/graphql",
+                json={"query": query},
+                headers={"Content-Type": "application/json",
+                         "User-Agent": self.headers["User-Agent"]},
+                timeout=15
+            )
+            if res.status_code == 200:
+                nodes = res.json().get('data', {}).get('activities', {}).get('nodes', [])
+                results = []
+                for node in nodes:
+                    title = node.get('title', '')
+                    cats = ' '.join(c.get('name', '') for c in (node.get('categories') or []))
+                    if any(k in title + cats for k in ['해커톤', 'Hackathon', 'hackathon']):
+                        nid = node.get('id', '')
+                        results.append({
+                            "title": f"🇰🇷 [링커리어] {title}",
+                            "url": f"https://linkareer.com/activity/{nid}",
+                            "host": "Linkareer",
+                            "date": "상세 확인"
+                        })
+                return results
+        except Exception as e:
+            print(f"Linkareer 크롤링 예외: {e}")
+        return []
+
     def run(self):
         print("🔍 해커톤 정보 수집을 시작합니다...")
         all_hackathons = []
-        
+
         # 함수 목록과 이름 매핑
         tasks = [
             ("Devpost", self.fetch_devpost),
@@ -275,7 +432,11 @@ class HackathonBot:
             ("DoraHacks", self.fetch_dorahacks),
             ("Programmers", self.fetch_programmers),
             ("DevEvent", self.fetch_devevent),
-            ("goorm", self.fetch_goorm)
+            ("goorm", self.fetch_goorm),
+            ("Wevity", self.fetch_wevity),
+            ("CampusPick", self.fetch_campuspick),
+            ("AIConnect", self.fetch_aiconnect),
+            ("Linkareer", self.fetch_linkareer),
         ]
         
         for name, fetcher in tasks:
