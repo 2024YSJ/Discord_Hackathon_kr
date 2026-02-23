@@ -378,36 +378,40 @@ class HackathonBot:
         return []
 
     def fetch_campuspick(self):
-        """캠퍼스픽 해커톤 공모전 목록"""
+        """캠퍼스픽 내부 API (api2.campuspick.com/find/activity/list POST)"""
         try:
-            headers = self.headers.copy()
-            headers.update({
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
-                "Referer": "https://www.campuspick.com/",
+            api_headers = self.headers.copy()
+            api_headers.update({
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": "https://www2.campuspick.com",
+                "Referer": "https://www2.campuspick.com/contest?category=108",
             })
-            # campuspick.com은 www2로 리다이렉트됨
-            url = "https://www2.campuspick.com/contest?category=108&keyword=%ED%95%B4%EC%BB%A4%ED%86%A4"
-            res = requests.get(url, headers=headers, timeout=15)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                results = []
-                # 공모전 링크 패턴으로 항목 탐색
-                for a in soup.find_all('a', href=re.compile(r'/contest/\d+')):
-                    title_el = a.find(['h3', 'h4', 'h2', 'p', 'span'],
-                                       class_=re.compile(r'title|name|tit|subject'))
-                    title = title_el.get_text(strip=True) if title_el else a.get_text(strip=True)
-                    if not title:
-                        continue
-                    href = a['href']
-                    full_url = "https://www2.campuspick.com" + href if href.startswith('/') else href
+            today = datetime.now().strftime('%Y-%m-%d')
+            results = []
+            # categoryId=108 (해커톤), 페이지 순회
+            for offset in range(0, 40, 20):
+                res = requests.post(
+                    "https://api2.campuspick.com/find/activity/list",
+                    data={"target": 1, "limit": 20, "offset": offset, "categoryId": 108},
+                    headers=api_headers, timeout=15
+                )
+                if res.status_code != 200:
+                    break
+                activities = res.json().get("result", {}).get("activities", [])
+                if not activities:
+                    break
+                valid = [a for a in activities if a.get("endDate", "") >= today]
+                for a in valid:
                     results.append({
-                        "title": f"🇰🇷 [캠퍼스픽] {title}",
-                        "url": full_url,
+                        "title": f"🇰🇷 [캠퍼스픽] {a['title']}",
+                        "url": f"https://www2.campuspick.com/contest/view?id={a['id']}",
                         "host": "CampusPick",
-                        "date": "상세 확인"
+                        "date": a.get("endDate", "상세 확인")
                     })
-                return results
+                # 첫 페이지에 유효 결과 없으면 중단
+                if not valid:
+                    break
+            return results
         except Exception as e:
             print(f"CampusPick 크롤링 예외: {e}")
         return []
