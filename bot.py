@@ -139,73 +139,122 @@ class HackathonBot:
             return []
         except: return []
 
-    def fetch_wevity(self):
+    def fetch_programmers(self):
+        """프로그래머스 챌린지/해커톤 수집"""
         results = []
         try:
-            url = "https://www.wevity.com/?c=find&s=1&gub=1&cat=30"
+            # 프로그래머스 스킬 체크 및 챌린지 페이지
+            url = "https://programmers.co.kr/learn/challenges"
             res = requests.get(url, headers=self.headers, timeout=15)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
-                for item in soup.select('.list li'):
-                    title_tag = item.select_one('.tit a')
-                    if title_tag and any(k in title_tag.text for k in ['해커톤', 'Hackathon']):
-                        results.append({"title": f"🇰🇷 [위비티] {title_tag.text.strip()}", "url": "https://www.wevity.com/" + title_tag['href'], "host": "Wevity", "date": item.select_one('.dday').text.strip() if item.select_one('.dday') else "기한확인"})
-        except: pass
+                # 해커톤이나 챌린지 카드 탐색
+                items = soup.select('.challenge-card')
+                for item in items:
+                    title = item.select_one('.title').text.strip()
+                    if '해커톤' in title or '챌린지' in title:
+                        link = "https://programmers.co.kr" + item.select_one('a')['href']
+                        results.append({
+                            "title": f"🇰🇷 [프로그래머스] {title}",
+                            "url": link,
+                            "host": "Programmers",
+                            "date": "진행중/마감확인"
+                        })
+        except Exception as e:
+            print(f"Programmers Error: {e}")
         return results
 
-    def fetch_linkareer(self):
-        """링커리어는 CSR 방식이라 일반 크롤링이 어려울 수 있어 API 경로로 시도"""
-        try:
-            # 실제 링커리어 공모전 리스트 API (비공식)
-            url = "https://api.linkareer.com/api/v1/posts"
-            params = {"filterType": "CATEGORY", "filterValue": "11", "pageSize": 10} # 11: IT/소프트웨어
-            res = requests.get(url, params=params, headers=self.headers, timeout=15)
-            if res.status_code == 200:
-                data = res.json().get('data', {}).get('posts', [])
-                return [{"title": f"🇰🇷 [링커리어] {p['title']}", "url": f"https://linkareer.com/activity/{p['id']}", "host": "Linkareer", "date": "상세확인"} for p in data if '해커톤' in p['title']]
-            return []
-        except Exception as e:
-            print(f"Linkareer Error: {e}")
-            return []
-
-    def fetch_campuspick(self):
+    def fetch_devevent(self):
+        """국내 IT 행사 큐레이션 '데브이벤트' 수집"""
         results = []
         try:
-            url = "https://www.campuspick.com/contest"
+            # 해커톤 카테고리/태그 기반 (비공식 API 또는 페이지)
+            url = "https://dev-event.vercel.app/api/events" # 데브이벤트는 오픈소스로 관리되는 경우가 많음
+            res = requests.get(url, headers=self.headers, timeout=15)
+            if res.status_code == 200:
+                events = res.json()
+                for e in events:
+                    title = e.get('title', '')
+                    if '해커톤' in title or 'Hackathon' in title:
+                        results.append({
+                            "title": f"🇰🇷 [데브이벤트] {title}",
+                            "url": e.get('link', ''),
+                            "host": "DevEvent",
+                            "date": e.get('period', '확인필요')
+                        })
+        except:
+            # API 실패 시 페이지 크롤링으로 백업
+            try:
+                url = "https://dev-event.vercel.app/"
+                res = requests.get(url, headers=self.headers, timeout=15)
+                soup = BeautifulSoup(res.text, 'html.parser')
+                # 텍스트 내 '해커톤' 포함 링크 탐색
+                for a in soup.find_all('a'):
+                    if '해커톤' in a.text:
+                        results.append({
+                            "title": f"🇰🇷 [데브이벤트] {a.text.strip()}",
+                            "url": a['href'],
+                            "host": "DevEvent",
+                            "date": "확인필요"
+                        })
+            except: pass
+        return results
+
+    def fetch_goorm(self):
+        """구름(goorm) 해커톤 섹션 수집"""
+        results = []
+        try:
+            url = "https://level.goorm.io/l/challenge"
             res = requests.get(url, headers=self.headers, timeout=15)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
-                for a in soup.select('a.item'):
-                    title = a.select_one('h2').text.strip() if a.select_one('h2') else ""
-                    if '해커톤' in title:
-                        results.append({"title": f"🇰🇷 [캠퍼스픽] {title}", "url": "https://www.campuspick.com" + a['href'], "host": "Campuspick", "date": a.select_one('.dday').text.strip() if a.select_one('.dday') else "진행중"})
-        except: pass
+                # 구름톤 등 챌린지 카드 추출
+                for card in soup.select('.challenge-card-item'):
+                    title = card.select_one('.card-title').text.strip()
+                    link = "https://level.goorm.io" + card.select_one('a')['href']
+                    results.append({
+                        "title": f"🇰🇷 [구름] {title}",
+                        "url": link,
+                        "host": "goorm",
+                        "date": "일정확인"
+                    })
+        except Exception as e:
+            print(f"goorm Error: {e}")
         return results
 
     def run(self):
         print("🔍 해커톤 정보 수집을 시작합니다...")
         all_hackathons = []
         
-        # 수집 함수 실행
-        all_hackathons.extend(self.fetch_devpost())
-        all_hackathons.extend(self.fetch_mlh())
-        all_hackathons.extend(self.fetch_devfolio())
-        all_hackathons.extend(self.fetch_unstop())
-        all_hackathons.extend(self.fetch_kaggle())
-        all_hackathons.extend(self.fetch_hack2skill())
-        all_hackathons.extend(self.fetch_dorahacks())
-        all_hackathons.extend(self.fetch_wevity())
-        all_hackathons.extend(self.fetch_linkareer())
-        all_hackathons.extend(self.fetch_campuspick())
+        # 함수 목록과 이름 매핑
+        tasks = [
+            ("Devpost", self.fetch_devpost),
+            ("MLH", self.fetch_mlh),
+            ("Devfolio", self.fetch_devfolio),
+            ("Unstop", self.fetch_unstop),
+            ("Kaggle", self.fetch_kaggle),
+            ("Hack2Skill", self.fetch_hack2skill),
+            ("DoraHacks", self.fetch_dorahacks),
+            ("Programmers", self.fetch_programmers),
+            ("DevEvent", self.fetch_devevent),
+            ("goorm", self.fetch_goorm)
+        ]
+        
+        for name, fetcher in tasks:
+            try:
+                found = fetcher()
+                print(f"📡 {name}: {len(found)}개 발견") # 로그 출력
+                all_hackathons.extend(found)
+            except Exception as e:
+                print(f"❌ {name} 실행 중 치명적 오류: {e}")
 
-        # 중복 제거 (데이터베이스에 없는 제목만 추출)
+        # 중복 제거
         new_items = [h for h in all_hackathons if h['title'] not in self.sent_list]
+        print(f"📊 최종 신규 공고: {len(new_items)}개")
 
         if not new_items:
-            print("✅ 새로운 공고가 없습니다.")
             return
 
-        print(f"🆕 {len(new_items)}개의 새로운 공고를 발견했습니다!")
         self.send_to_discord(new_items)
         self.save_sent_list(new_items)
 
