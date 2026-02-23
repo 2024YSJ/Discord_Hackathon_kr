@@ -119,25 +119,32 @@ class HackathonBot:
         except: return []
 
     def fetch_dorahacks(self):
-        # DoraHacks는 __NEXT_DATA__ 방식에서 Nuxt.js 클라이언트 렌더링으로 전환됨
-        # 공식 API 탐색
+        """DoraHacks REST API - 진행 중인 해커톤 목록"""
         try:
-            for api_url in [
-                "https://dorahacks.io/api/hackathon?status=open&limit=20",
-                "https://dorahacks.io/api/v1/hackathon?status=upcoming&size=20",
-            ]:
-                res = requests.get(api_url, headers=self.headers, timeout=10)
-                if res.status_code == 200:
-                    try:
-                        data = res.json()
-                        items = data if isinstance(data, list) else data.get('data', data.get('list', []))
-                        if isinstance(items, list) and items:
-                            return [{"title": h.get('title') or h.get('name', ''),
-                                     "url": f"https://dorahacks.io/hackathon/{h.get('id', '')}",
-                                     "host": "DoraHacks", "date": "상세 확인"}
-                                    for h in items if h.get('title') or h.get('name')]
-                    except Exception:
-                        pass
+            import time as _time
+            res = requests.get(
+                "https://dorahacks.io/api/hackathon",
+                params={"status": "open", "limit": 20},
+                headers=self.headers, timeout=15
+            )
+            if res.status_code == 200:
+                now_ts = _time.time()
+                results = []
+                for h in res.json().get('results', []):
+                    title = h.get('title', '')
+                    if not title:
+                        continue
+                    # end_time이 현재 이전이면 스킵
+                    end_ts = h.get('end_time')
+                    if end_ts and int(end_ts) < now_ts:
+                        continue
+                    results.append({
+                        "title": title,
+                        "url": f"https://dorahacks.io/hackathon/{h.get('id', '')}",
+                        "host": "DoraHacks",
+                        "date": "상세 확인"
+                    })
+                return results
         except Exception as e:
             print(f"DoraHacks 크롤링 예외: {e}")
         return []
@@ -201,25 +208,31 @@ class HackathonBot:
         return []
 
     def fetch_programmers(self):
+        """프로그래머스 대회 공식 API"""
         try:
-            # 특정 카테고리가 아닌 전체 챌린지 페이지
-            url = "https://programmers.co.kr/learn/challenges"
-            res = requests.get(url, headers=self.headers, timeout=15)
-            soup = BeautifulSoup(res.text, 'html.parser')
-            results = []
-            # 'challenge-card' 클래스 외에 제목을 포함하는 모든 링크 탐색
-            for a in soup.select('a[href*="/learn/challenges/"]'):
-                title_el = a.select_one('h4, .title, h5')
-                if title_el:
-                    title = title_el.get_text(strip=True)
-                    if any(k in title for k in ['해커톤', '챌린지', '대회']):
-                        results.append({
-                            "title": f"🇰🇷 [프로그래머스] {title}",
-                            "url": "https://programmers.co.kr" + a['href'],
-                            "host": "Programmers", "date": "상세 확인"
-                        })
-            return results
-        except: pass
+            res = requests.get("https://programmers.co.kr/api/competitions",
+                               headers=self.headers, timeout=15)
+            if res.status_code == 200:
+                today = datetime.now().strftime('%Y-%m-%d')
+                results = []
+                for c in res.json().get('competitions', []):
+                    if c.get('statusLabel') == 'ended':
+                        continue
+                    # 접수 마감이 이미 지난 경우 스킵
+                    end_at = c.get('receiptEndAt') or c.get('endAt') or ''
+                    if end_at and end_at[:10] < today:
+                        continue
+                    title = c.get('title', '')
+                    href  = c.get('href', '')
+                    results.append({
+                        "title": f"🇰🇷 [프로그래머스] {title}",
+                        "url": f"https://programmers.co.kr{href}",
+                        "host": "Programmers",
+                        "date": end_at[:10] if end_at else "상세 확인"
+                    })
+                return results
+        except Exception as e:
+            print(f"Programmers 크롤링 예외: {e}")
         return []
 
     def fetch_devevent(self):
@@ -248,50 +261,24 @@ class HackathonBot:
         return []
 
     def fetch_goorm(self):
-        try:
-            headers = self.headers.copy()
-            headers.update({
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
-            })
-            url = "https://level.goorm.io/l/challenge"
-            res = requests.get(url, headers=headers, timeout=15)
-            if res.status_code != 200:
-                return []
-            soup = BeautifulSoup(res.text, 'html.parser')
-            results = []
-            seen = set()
-            for item in soup.find_all(['div', 'a'], class_=re.compile(r'card|item|challenge|contest')):
-                title_el = item.find(['h3', 'h4', 'h2', 'div', 'span'], class_=re.compile(r'title|name|subject'))
-                if not title_el:
-                    continue
-                title = title_el.get_text(strip=True)
-                if not title or title in seen:
-                    continue
-                seen.add(title)
-                link_el = item if item.name == 'a' else item.find('a')
-                if link_el and link_el.get('href'):
-                    href = link_el['href']
-                    full_url = href if href.startswith('http') else "https://level.goorm.io" + href
-                    results.append({
-                        "title": f"🇰🇷 [구름] {title}",
-                        "url": full_url,
-                        "host": "goorm",
-                        "date": "상세 확인"
-                    })
-            return results
-        except Exception as e:
-            print(f"Goorm 크롤링 예외: {e}")
+        # level.goorm.io는 Vue SPA로 서버사이드 렌더링이 없어 크롤링 불가
         return []
 
     def fetch_wevity(self):
-        """위비티 해커톤 공모전 목록 파싱 (서버사이드 렌더링)"""
+        """위비티 해커톤 공모전 목록 파싱 (세션 쿠키로 403 우회)"""
         try:
-            # params 사용으로 한글 인코딩 문제 방지
-            res = requests.get(
-                "https://www.wevity.com/",
+            session = requests.Session()
+            session.headers.update(self.headers)
+            session.headers.update({
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            })
+            # 메인 페이지 먼저 방문해 PHPSESSID 쿠키 획득
+            session.get('https://www.wevity.com/', timeout=10)
+            res = session.get(
+                'https://www.wevity.com/',
                 params={'c': 'find', 's': '1', 'sp': 'contents', 'sw': '해커톤'},
-                headers=self.headers, timeout=15
+                timeout=15
             )
             print(f"  Wevity HTTP {res.status_code}, {len(res.text)} bytes")
             if res.status_code == 200:
