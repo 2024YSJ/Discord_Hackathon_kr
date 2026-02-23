@@ -50,14 +50,49 @@ class HackathonBot:
         except: return []
 
     def fetch_mlh(self):
+        """MLH 2026 시즌 페이지 정밀 크롤링"""
         try:
-            # 특정 연도 필터 없이 전체를 가져와서 로컬에서 필터링하는 것이 누락을 방지함
-            res = requests.get("https://mlh.io/api/v1/hackathons", headers=self.headers, timeout=15)
+            # 2026 시즌 이벤트 페이지 직접 접근
+            url = "https://mlh.io/seasons/2026/events"
+            res = requests.get(url, headers=self.headers, timeout=15)
+            
             if res.status_code == 200:
-                now = datetime.now().strftime('%Y-%m-%d')
-                return [{"title": h['name'], "url": h['url'], "host": "MLH", "date": h['start_date']} 
-                        for h in res.json() if h.get('start_date', '') >= now]
-        except: pass
+                soup = BeautifulSoup(res.text, 'html.parser')
+                results = []
+                
+                # MLH 이벤트 카드의 공통 부모 요소 탐색
+                # 각 해커톤은 'event-wrapper' 클래스를 가진 div 안에 위치함
+                event_cards = soup.select('.event-wrapper')
+                
+                for card in event_cards:
+                    # 제목(이름) 추출
+                    title_el = card.select_one('.event-name')
+                    # 상세 페이지 링크 추출
+                    link_el = card.select_one('a[href]')
+                    # 날짜 정보 (보통 'event-date' 클래스 사용)
+                    date_el = card.select_one('.event-date')
+                    
+                    if title_el and link_el:
+                        title = title_el.get_text(strip=True)
+                        link = link_el['href']
+                        
+                        # 절대 경로 확인 및 보정
+                        if not link.startswith('http'):
+                            link = "https://mlh.io" + link
+                            
+                        results.append({
+                            "title": title,
+                            "url": link,
+                            "host": "MLH",
+                            "date": date_el.get_text(strip=True) if date_el else "2026 Season"
+                        })
+                
+                print(f"📡 MLH: {len(results)}개 추출 성공")
+                return results
+            else:
+                print(f"MLH 응답 오류: {res.status_code}")
+        except Exception as e:
+            print(f"MLH 크롤링 예외 발생: {e}")
         return []
 
     def fetch_devfolio(self):
