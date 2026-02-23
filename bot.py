@@ -50,43 +50,39 @@ class HackathonBot:
         except: return []
 
     def fetch_mlh(self):
-        """MLH 2026 시즌 페이지 정밀 크롤링"""
+        """MLH 2026 시즌 페이지 크롤링 (실제 HTML 구조 기반)"""
         try:
-            # 2026 시즌 이벤트 페이지 직접 접근
             url = "https://mlh.io/seasons/2026/events"
             res = requests.get(url, headers=self.headers, timeout=15)
-            
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
                 results = []
-                
-                # MLH 이벤트 카드의 공통 부모 요소 탐색
-                # 각 해커톤은 'event-wrapper' 클래스를 가진 div 안에 위치함
-                event_cards = soup.select('.event-wrapper')
-                
-                for card in event_cards:
-                    # 제목(이름) 추출
-                    title_el = card.select_one('.event-name')
-                    # 상세 페이지 링크 추출
-                    link_el = card.select_one('a[href]')
-                    # 날짜 정보 (보통 'event-date' 클래스 사용)
-                    date_el = card.select_one('.event-date')
-                    
-                    if title_el and link_el:
-                        title = title_el.get_text(strip=True)
-                        link = link_el['href']
-                        
-                        # 절대 경로 확인 및 보정
-                        if not link.startswith('http'):
-                            link = "https://mlh.io" + link
-                            
-                        results.append({
-                            "title": title,
-                            "url": link,
-                            "host": "MLH",
-                            "date": date_el.get_text(strip=True) if date_el else "2026 Season"
-                        })
-                
+                # MLH는 이벤트를 <a> 태그 안에 <h3>으로 표시 (CSS 클래스 없음)
+                seen = set()
+                for a in soup.find_all('a', href=True):
+                    h3 = a.find('h3')
+                    if not h3:
+                        continue
+                    title = h3.get_text(strip=True)
+                    if not title or title in seen:
+                        continue
+                    seen.add(title)
+                    link = a['href'].split('?')[0]  # UTM 파라미터 제거
+                    if not link.startswith('http'):
+                        link = "https://mlh.io" + link
+                    # 날짜는 <a> 태그 내 텍스트 노드 (예: "FEB 27 - MAR 01")
+                    date_str = "2026 Season"
+                    for child in a.children:
+                        text = str(child).strip()
+                        if re.match(r'^[A-Z]{3}\s+\d+', text):
+                            date_str = text
+                            break
+                    results.append({
+                        "title": title,
+                        "url": link,
+                        "host": "MLH",
+                        "date": date_str
+                    })
                 print(f"📡 MLH: {len(results)}개 추출 성공")
                 return results
             else:
@@ -107,28 +103,36 @@ class HackathonBot:
         except: return []
 
     def fetch_dorahacks(self):
-            try:
-                # 해커톤 목록 페이지 직접 타격
-                url = "https://dorahacks.io/hackathon"
-                res = requests.get(url, headers=self.headers, timeout=15)
+        try:
+            headers = self.headers.copy()
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            })
+            url = "https://dorahacks.io/hackathon"
+            res = requests.get(url, headers=headers, timeout=15)
+            if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
                 script = soup.find('script', id='__NEXT_DATA__')
                 if script:
                     data = json.loads(script.string)
-                    # Next.js의 복잡한 데이터 트리 구조 정밀 탐색
+                    # Next.js Apollo State 탐색
                     queries = data.get('props', {}).get('pageProps', {}).get('apolloState', {})
                     results = []
                     for key, value in queries.items():
-                        if key.startswith('Hackathon:') and value.get('name'):
+                        if key.startswith('Hackathon:') and isinstance(value, dict) and value.get('name'):
                             results.append({
                                 "title": value['name'],
-                                "url": f"https://dorahacks.io/hackathon/{value.get('id')}",
+                                "url": f"https://dorahacks.io/hackathon/{value.get('id', '')}",
                                 "host": "DoraHacks",
                                 "date": "상세 확인"
                             })
                     return results
-            except: pass
-            return []
+        except Exception as e:
+            print(f"DoraHacks 크롤링 예외: {e}")
+        return []
 
     def fetch_unstop(self):
         try:
@@ -141,15 +145,25 @@ class HackathonBot:
         except: return []
 
     def fetch_kaggle(self):
+        # Kaggle은 클라이언트 사이드 렌더링으로 window.Kaggle.State가 더 이상 존재하지 않음
+        # __NEXT_DATA__ 또는 JSON-LD 방식 시도
         try:
             url = "https://www.kaggle.com/competitions?hostSegmentIdFilter=8"
             res = requests.get(url, headers=self.headers, timeout=15)
-            # JSON 데이터를 뽑아내기 위한 더 정밀한 정규표현식
-            match = re.search(r'window\.Kaggle\.State\s*=\s*({.*?});(?=\s*window|$)', res.text, re.DOTALL)
-            if match:
-                data = json.loads(match.group(1))
-                items = data.get('competitionListing', {}).get('competitions', [])
-                return [{"title": i['title'], "url": f"https://www.kaggle.com/c/{i['ref']}", "host": "Kaggle", "date": i.get('deadline')} for i in items]
+            soup = BeautifulSoup(res.text, 'html.parser')
+            # Next.js 데이터 시도
+            script = soup.find('script', id='__NEXT_DATA__')
+            if script:
+                data = json.loads(script.string)
+                items = data.get('props', {}).get('pageProps', {}).get('competitions', [])
+                return [{"title": i['title'], "url": f"https://www.kaggle.com/c/{i.get('ref', i.get('id', ''))}", "host": "Kaggle", "date": i.get('deadline', 'N/A')} for i in items if i.get('title')]
+            # JSON-LD 구조화 데이터 시도
+            for s in soup.find_all('script', type='application/ld+json'):
+                try:
+                    ld = json.loads(s.string)
+                    if isinstance(ld, list):
+                        return [{"title": e.get('name', ''), "url": e.get('url', ''), "host": "Kaggle", "date": e.get('endDate', 'N/A')} for e in ld if e.get('name')]
+                except: continue
         except: pass
         return []
 
@@ -185,38 +199,65 @@ class HackathonBot:
         return []
 
     def fetch_devevent(self):
+        """brave-people/Dev-Event 마크다운 파일 파싱 (한국 개발 이벤트)"""
         try:
-            # 웹페이지 대신 개발자가 관리하는 GitHub의 Raw JSON을 직접 타격 (차단 0%)
-            url = "https://raw.githubusercontent.com/one-meter/dev-event/master/lib/events.json"
+            now = datetime.now()
+            year_short = str(now.year)[2:]   # 예: "26"
+            month = str(now.month).zfill(2)  # 예: "02"
+            url = f"https://raw.githubusercontent.com/brave-people/Dev-Event/master/end_event/{now.year}/{year_short}_{month}.md"
             res = requests.get(url, timeout=15)
             if res.status_code == 200:
-                now = datetime.now().strftime('%Y-%m-%d')
-                return [{"title": f"🇰🇷 [데브이벤트] {e['title']}", "url": e['link'], "host": "DevEvent", "date": e['startDate']} 
-                        for e in res.json() if ('해커톤' in e['title'] or 'Hackathon' in e['title']) and e.get('endDate', '9999-12-31') >= now]
-        except: pass
+                results = []
+                # 마크다운 형식: - __[제목](URL)__
+                for m in re.finditer(r'__\[([^\]]+)\]\((https?://[^\)]+)\)__', res.text):
+                    title, link = m.group(1), m.group(2)
+                    if any(k in title for k in ['해커톤', 'Hackathon', 'hackathon', '공모전', '경진대회']):
+                        results.append({
+                            "title": f"🇰🇷 [데브이벤트] {title}",
+                            "url": link,
+                            "host": "DevEvent",
+                            "date": "상세 확인"
+                        })
+                return results
+        except Exception as e:
+            print(f"DevEvent 크롤링 예외 발생: {e}")
         return []
 
     def fetch_goorm(self):
         try:
-            # 구름은 최근 '에듀'와 '레벨' 섹션이 통합되는 추세입니다.
+            headers = self.headers.copy()
+            headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+            })
             url = "https://level.goorm.io/l/challenge"
-            res = requests.get(url, headers=self.headers, timeout=15)
+            res = requests.get(url, headers=headers, timeout=15)
+            if res.status_code != 200:
+                return []
             soup = BeautifulSoup(res.text, 'html.parser')
             results = []
-            # 카드 레이아웃의 공통 부모 탐색
-            for item in soup.find_all(['div', 'a'], class_=re.compile(r'card|item|challenge')):
-                title_el = item.find(['h3', 'h4', 'div'], class_=re.compile(r'title|name'))
-                if title_el:
-                    title = title_el.get_text(strip=True)
-                    link_el = item if item.name == 'a' else item.find('a')
-                    if link_el and link_el.get('href'):
-                        results.append({
-                            "title": f"🇰🇷 [구름] {title}",
-                            "url": "https://level.goorm.io" + link_el['href'],
-                            "host": "goorm", "date": "상세 확인"
-                        })
+            seen = set()
+            for item in soup.find_all(['div', 'a'], class_=re.compile(r'card|item|challenge|contest')):
+                title_el = item.find(['h3', 'h4', 'h2', 'div', 'span'], class_=re.compile(r'title|name|subject'))
+                if not title_el:
+                    continue
+                title = title_el.get_text(strip=True)
+                if not title or title in seen:
+                    continue
+                seen.add(title)
+                link_el = item if item.name == 'a' else item.find('a')
+                if link_el and link_el.get('href'):
+                    href = link_el['href']
+                    full_url = href if href.startswith('http') else "https://level.goorm.io" + href
+                    results.append({
+                        "title": f"🇰🇷 [구름] {title}",
+                        "url": full_url,
+                        "host": "goorm",
+                        "date": "상세 확인"
+                    })
             return results
-        except: pass
+        except Exception as e:
+            print(f"Goorm 크롤링 예외: {e}")
         return []
 
     def run(self):
