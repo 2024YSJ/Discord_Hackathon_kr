@@ -101,22 +101,48 @@ class HackathonBot:
         return []
 
     def fetch_devfolio(self):
+        """devfolio.co/hackathons의 __NEXT_DATA__ 에서 open/upcoming/featured 해커톤 추출"""
         try:
             dev_headers = self.headers.copy()
-            dev_headers.update({"Origin": "https://devfolio.co", "Referer": "https://devfolio.co/hackathons"})
+            dev_headers.update({
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            })
+            res = requests.get("https://devfolio.co/hackathons", headers=dev_headers, timeout=15)
+            if res.status_code != 200:
+                return []
+            soup = BeautifulSoup(res.text, 'html.parser')
+            script = soup.find('script', id='__NEXT_DATA__')
+            if not script:
+                return []
+            page_data = json.loads(script.string)
+            queries = page_data['props']['pageProps']['dehydratedState']['queries']
+            if not queries:
+                return []
+            qdata = queries[0]['state']['data']
             today = datetime.now().strftime('%Y-%m-%d')
-            res = requests.get(
-                "https://api.devfolio.co/api/hackathons",
-                params={"type": "open", "limit": 20, "page": 1},
-                headers=dev_headers, timeout=15
-            )
-            if res.status_code == 200:
-                return [{"title": h.get('name'), "url": f"https://{h.get('slug')}.devfolio.co",
-                         "host": "Devfolio", "date": (h.get('ends_at') or 'N/A')[:10]}
-                        for h in res.json().get('result', [])
-                        if h.get('slug') and (h.get('ends_at') or '9999') >= today]
+            seen = set()
+            results = []
+            for section in ('open_hackathons', 'upcoming_hackathons', 'featured_hackathons'):
+                for h in qdata.get(section, []):
+                    slug = h.get('slug', '')
+                    name = h.get('name', '')
+                    if not slug or not name or slug in seen:
+                        continue
+                    seen.add(slug)
+                    ends_at = (h.get('ends_at') or '')[:10]
+                    if ends_at and ends_at < today:
+                        continue
+                    results.append({
+                        "title": name,
+                        "url": f"https://{slug}.devfolio.co",
+                        "host": "Devfolio",
+                        "date": ends_at or "상세 확인"
+                    })
+            return results
+        except Exception as e:
+            print(f"Devfolio 크롤링 예외: {e}")
             return []
-        except: return []
 
     def fetch_dorahacks(self):
         """DoraHacks REST API - 진행 중인 해커톤 목록"""
