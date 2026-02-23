@@ -50,14 +50,16 @@ class HackathonBot:
         except: return []
 
     def fetch_mlh(self):
-        """MLH 2026 시즌 페이지 크롤링 (실제 HTML 구조 기반)"""
+        """MLH 2026 시즌 페이지 크롤링 - 미래 이벤트만 반환"""
+        MONTHS = {'JAN':1,'FEB':2,'MAR':3,'APR':4,'MAY':5,'JUN':6,
+                  'JUL':7,'AUG':8,'SEP':9,'OCT':10,'NOV':11,'DEC':12}
         try:
             url = "https://mlh.io/seasons/2026/events"
             res = requests.get(url, headers=self.headers, timeout=15)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
                 results = []
-                # MLH는 이벤트를 <a> 태그 안에 <h3>으로 표시 (CSS 클래스 없음)
+                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
                 seen = set()
                 for a in soup.find_all('a', href=True):
                     h3 = a.find('h3')
@@ -67,23 +69,30 @@ class HackathonBot:
                     if not title or title in seen:
                         continue
                     seen.add(title)
-                    link = a['href'].split('?')[0]  # UTM 파라미터 제거
+                    link = a['href'].split('?')[0]
                     if not link.startswith('http'):
                         link = "https://mlh.io" + link
-                    # 날짜는 <a> 태그 내 텍스트 노드 (예: "FEB 27 - MAR 01")
-                    date_str = "2026 Season"
-                    for child in a.children:
-                        text = str(child).strip()
-                        if re.match(r'^[A-Z]{3}\s+\d+', text):
-                            date_str = text
-                            break
+                    # <a> 전체 텍스트에서 날짜 패턴 추출 (예: "FEB 27", "MAR 01")
+                    a_text = a.get_text(separator=' ', strip=True).replace(title, '')
+                    date_parts = re.findall(r'([A-Z]{3})\s+(\d{1,2})', a_text)
+                    if date_parts:
+                        date_str = ' - '.join(f"{m} {d}" for m, d in date_parts) if len(date_parts) > 1 else f"{date_parts[0][0]} {date_parts[0][1]}"
+                        # 종료일(마지막 날짜)이 오늘 이전이면 스킵
+                        mon, day = date_parts[-1]
+                        end_m = MONTHS.get(mon, 0)
+                        if end_m:
+                            event_end = datetime(today.year, end_m, int(day))
+                            if event_end < today:
+                                continue
+                    else:
+                        date_str = "2026 Season"
                     results.append({
                         "title": title,
                         "url": link,
                         "host": "MLH",
                         "date": date_str
                     })
-                print(f"📡 MLH: {len(results)}개 추출 성공")
+                print(f"📡 MLH: {len(results)}개 추출 성공 (종료 이벤트 제외)")
                 return results
             else:
                 print(f"MLH 응답 오류: {res.status_code}")
@@ -94,42 +103,41 @@ class HackathonBot:
     def fetch_devfolio(self):
         try:
             dev_headers = self.headers.copy()
-            dev_headers.update({"Origin": "https://devfolio.co", "Referer": "https://devfolio.co/hackathons", "X-Requested-With": "XMLHttpRequest"})
-            url = "https://api.devfolio.co/api/hackathons"
-            res = requests.post(url, json={"type": "open", "limit": 15, "range": "upcoming"}, headers=dev_headers, timeout=15)
+            dev_headers.update({"Origin": "https://devfolio.co", "Referer": "https://devfolio.co/hackathons"})
+            today = datetime.now().strftime('%Y-%m-%d')
+            res = requests.get(
+                "https://api.devfolio.co/api/hackathons",
+                params={"type": "open", "limit": 20, "page": 1},
+                headers=dev_headers, timeout=15
+            )
             if res.status_code == 200:
-                return [{"title": h.get('name'), "url": f"https://{h.get('slug')}.devfolio.co", "host": "Devfolio", "date": h.get('start_date', 'N/A')} for h in res.json().get('result', []) if h.get('slug')]
+                return [{"title": h.get('name'), "url": f"https://{h.get('slug')}.devfolio.co",
+                         "host": "Devfolio", "date": (h.get('ends_at') or 'N/A')[:10]}
+                        for h in res.json().get('result', [])
+                        if h.get('slug') and (h.get('ends_at') or '9999') >= today]
             return []
         except: return []
 
     def fetch_dorahacks(self):
+        # DoraHacks는 __NEXT_DATA__ 방식에서 Nuxt.js 클라이언트 렌더링으로 전환됨
+        # 공식 API 탐색
         try:
-            headers = self.headers.copy()
-            headers.update({
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-            })
-            url = "https://dorahacks.io/hackathon"
-            res = requests.get(url, headers=headers, timeout=15)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                script = soup.find('script', id='__NEXT_DATA__')
-                if script:
-                    data = json.loads(script.string)
-                    # Next.js Apollo State 탐색
-                    queries = data.get('props', {}).get('pageProps', {}).get('apolloState', {})
-                    results = []
-                    for key, value in queries.items():
-                        if key.startswith('Hackathon:') and isinstance(value, dict) and value.get('name'):
-                            results.append({
-                                "title": value['name'],
-                                "url": f"https://dorahacks.io/hackathon/{value.get('id', '')}",
-                                "host": "DoraHacks",
-                                "date": "상세 확인"
-                            })
-                    return results
+            for api_url in [
+                "https://dorahacks.io/api/hackathon?status=open&limit=20",
+                "https://dorahacks.io/api/v1/hackathon?status=upcoming&size=20",
+            ]:
+                res = requests.get(api_url, headers=self.headers, timeout=10)
+                if res.status_code == 200:
+                    try:
+                        data = res.json()
+                        items = data if isinstance(data, list) else data.get('data', data.get('list', []))
+                        if isinstance(items, list) and items:
+                            return [{"title": h.get('title') or h.get('name', ''),
+                                     "url": f"https://dorahacks.io/hackathon/{h.get('id', '')}",
+                                     "host": "DoraHacks", "date": "상세 확인"}
+                                    for h in items if h.get('title') or h.get('name')]
+                    except Exception:
+                        pass
         except Exception as e:
             print(f"DoraHacks 크롤링 예외: {e}")
         return []
@@ -168,13 +176,29 @@ class HackathonBot:
         return []
 
     def fetch_hack2skill(self):
+        # api.hack2skill.com 도메인이 존재하지 않음 → 대체 엔드포인트 시도
         try:
-            url = "https://api.hack2skill.com/gethackathons"
-            res = requests.get(url, headers=self.headers, timeout=15)
-            if res.status_code == 200:
-                return [{"title": h.get('name'), "url": f"https://hack2skill.com/hackathon/{h.get('slug')}", "host": "Hack2Skill", "date": h.get('start_date', 'N/A').split('T')[0]} for h in res.json().get('data', []) if h.get('slug')]
-            return []
-        except: return []
+            for url in [
+                "https://hack2skill.com/api/v1/hackathons?status=upcoming",
+                "https://hack2skill.com/api/hackathons",
+            ]:
+                res = requests.get(url, headers=self.headers, timeout=10)
+                if res.status_code == 200:
+                    try:
+                        items = res.json()
+                        if isinstance(items, dict):
+                            items = items.get('data', items.get('hackathons', []))
+                        if isinstance(items, list) and items and isinstance(items[0], dict):
+                            return [{"title": h.get('name') or h.get('title', ''),
+                                     "url": f"https://hack2skill.com/hackathon/{h.get('slug', h.get('id', ''))}",
+                                     "host": "Hack2Skill",
+                                     "date": (h.get('start_date') or h.get('startDate') or 'N/A')[:10]}
+                                    for h in items if h.get('slug') or h.get('id')]
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"Hack2Skill 크롤링 예외: {e}")
+        return []
 
     def fetch_programmers(self):
         try:
@@ -263,19 +287,28 @@ class HackathonBot:
     def fetch_wevity(self):
         """위비티 해커톤 공모전 목록 파싱 (서버사이드 렌더링)"""
         try:
-            url = "https://www.wevity.com/?c=find&s=1&sp=contents&sw=%ED%95%B4%EC%BB%A4%ED%86%A4"
-            res = requests.get(url, headers=self.headers, timeout=15)
+            # params 사용으로 한글 인코딩 문제 방지
+            res = requests.get(
+                "https://www.wevity.com/",
+                params={'c': 'find', 's': '1', 'sp': 'contents', 'sw': '해커톤'},
+                headers=self.headers, timeout=15
+            )
+            print(f"  Wevity HTTP {res.status_code}, {len(res.text)} bytes")
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
-                results = []
                 ul = soup.find('ul', class_='list')
                 if not ul:
+                    print("  Wevity: ul.list 요소를 찾지 못함")
                     return []
-                for li in ul.find_all('li'):
+                results = []
+                li_all = ul.find_all('li')
+                print(f"  Wevity: {len(li_all)}개 li 발견")
+                for li in li_all:
                     if 'top' in li.get('class', []):
                         continue
-                    # 마감된 항목 스킵 (dday span에 'end' 클래스)
-                    if li.find('span', class_='end'):
+                    # dday span 텍스트로 마감 여부 확인 ('마감임박'은 포함)
+                    dday_span = li.find('span', class_='dday')
+                    if dday_span and dday_span.get_text(strip=True) == '마감':
                         continue
                     tit_div = li.find('div', class_='tit')
                     if not tit_div:
