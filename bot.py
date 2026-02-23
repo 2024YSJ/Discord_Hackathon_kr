@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from bs4 import BeautifulSoup
 import time
-
+import re
 # 설정
 WEBHOOK_URL = os.environ.get('DISCORD_WEBHOOK_URL')
 DB_FILE = "sent_hackathons.txt"
@@ -51,19 +51,14 @@ class HackathonBot:
 
     def fetch_mlh(self):
         try:
-            # 연도를 특정하지 않고 전체 목록을 가져온 뒤 현재 시점 데이터만 추출
-            url = "https://mlh.io/api/v1/hackathons" 
-            res = requests.get(url, headers=self.headers, timeout=15)
+            # 특정 연도 필터 없이 전체를 가져와서 로컬에서 필터링하는 것이 누락을 방지함
+            res = requests.get("https://mlh.io/api/v1/hackathons", headers=self.headers, timeout=15)
             if res.status_code == 200:
-                data = res.json()
-                now_str = datetime.now().strftime('%Y-%m-%d')
-                # 시작일이 현재보다 미래인 것만 필터링
-                upcoming = [h for h in data if h.get('start_date', '') >= now_str]
-                return [{"title": h['name'], "url": h['url'], "host": "MLH", "date": h['start_date']} for h in upcoming]
-            return []
-        except Exception as e:
-            print(f"MLH Error: {e}")
-            return []
+                now = datetime.now().strftime('%Y-%m-%d')
+                return [{"title": h['name'], "url": h['url'], "host": "MLH", "date": h['start_date']} 
+                        for h in res.json() if h.get('start_date', '') >= now]
+        except: pass
+        return []
 
     def fetch_devfolio(self):
         try:
@@ -77,15 +72,28 @@ class HackathonBot:
         except: return []
 
     def fetch_dorahacks(self):
-        try:
-            url = "https://dorahacks.io/api/v1/hackathon"
-            res = requests.get(url, params={"size": 10}, headers=self.headers, timeout=15)
-            if res.status_code == 200:
-                data = res.json()
-                items = data.get('data', {}).get('items', []) if 'data' in data else data.get('items', [])
-                return [{"title": h.get('name'), "url": f"https://dorahacks.io/hackathon/{h.get('id')}", "host": "DoraHacks", "date": "Check Website"} for h in items if h.get('id')]
+            try:
+                # 해커톤 목록 페이지 직접 타격
+                url = "https://dorahacks.io/hackathon"
+                res = requests.get(url, headers=self.headers, timeout=15)
+                soup = BeautifulSoup(res.text, 'html.parser')
+                script = soup.find('script', id='__NEXT_DATA__')
+                if script:
+                    data = json.loads(script.string)
+                    # Next.js의 복잡한 데이터 트리 구조 정밀 탐색
+                    queries = data.get('props', {}).get('pageProps', {}).get('apolloState', {})
+                    results = []
+                    for key, value in queries.items():
+                        if key.startswith('Hackathon:') and value.get('name'):
+                            results.append({
+                                "title": value['name'],
+                                "url": f"https://dorahacks.io/hackathon/{value.get('id')}",
+                                "host": "DoraHacks",
+                                "date": "상세 확인"
+                            })
+                    return results
+            except: pass
             return []
-        except: return []
 
     def fetch_unstop(self):
         try:
@@ -99,36 +107,16 @@ class HackathonBot:
 
     def fetch_kaggle(self):
         try:
-            # Kaggle은 위조된 헤더가 매우 중요합니다.
-            kaggle_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Accept": "application/json",
-                "X-Requested-With": "XMLHttpRequest",
-                "Referer": "https://www.kaggle.com/competitions"
-            }
-            # 엔드포인트 파라미터 최신화
-            url = "https://www.kaggle.com/api/i/competitions.CompetitionService/ListCompetitions"
-            params = {"category": "all", "listCompetitionsRequest.sort": "LATEST"}
-            
-            res = requests.get(url, params=params, headers=kaggle_headers, timeout=15)
-            if res.status_code == 200:
-                items = res.json().get('competitions', [])
-                results = []
-                for i in items:
-                    title = i.get('title', '')
-                    # 상금/보상 체계가 'Knowledge'이거나 제목에 키워드가 있는 것 추출
-                    if any(k in title.lower() for k in ['hackathon', 'challenge']) or i.get('rewardTypeName') == 'Knowledge':
-                        results.append({
-                            "title": title, 
-                            "url": f"https://www.kaggle.com/c/{i.get('ref')}", 
-                            "host": "Kaggle", 
-                            "date": i.get('deadline', 'Ongoing').split('T')[0]
-                        })
-                return results
-            return []
-        except Exception as e:
-            print(f"Kaggle Error: {e}")
-            return []
+            url = "https://www.kaggle.com/competitions?hostSegmentIdFilter=8"
+            res = requests.get(url, headers=self.headers, timeout=15)
+            # JSON 데이터를 뽑아내기 위한 더 정밀한 정규표현식
+            match = re.search(r'window\.Kaggle\.State\s*=\s*({.*?});(?=\s*window|$)', res.text, re.DOTALL)
+            if match:
+                data = json.loads(match.group(1))
+                items = data.get('competitionListing', {}).get('competitions', [])
+                return [{"title": i['title'], "url": f"https://www.kaggle.com/c/{i['ref']}", "host": "Kaggle", "date": i.get('deadline')} for i in items]
+        except: pass
+        return []
 
     def fetch_hack2skill(self):
         try:
@@ -140,87 +128,61 @@ class HackathonBot:
         except: return []
 
     def fetch_programmers(self):
-        """프로그래머스 챌린지/해커톤 수집"""
-        results = []
         try:
-            # 프로그래머스 스킬 체크 및 챌린지 페이지
+            # 특정 카테고리가 아닌 전체 챌린지 페이지
             url = "https://programmers.co.kr/learn/challenges"
             res = requests.get(url, headers=self.headers, timeout=15)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                # 해커톤이나 챌린지 카드 탐색
-                items = soup.select('.challenge-card')
-                for item in items:
-                    title = item.select_one('.title').text.strip()
-                    if '해커톤' in title or '챌린지' in title:
-                        link = "https://programmers.co.kr" + item.select_one('a')['href']
+            soup = BeautifulSoup(res.text, 'html.parser')
+            results = []
+            # 'challenge-card' 클래스 외에 제목을 포함하는 모든 링크 탐색
+            for a in soup.select('a[href*="/learn/challenges/"]'):
+                title_el = a.select_one('h4, .title, h5')
+                if title_el:
+                    title = title_el.get_text(strip=True)
+                    if any(k in title for k in ['해커톤', '챌린지', '대회']):
                         results.append({
                             "title": f"🇰🇷 [프로그래머스] {title}",
-                            "url": link,
-                            "host": "Programmers",
-                            "date": "진행중/마감확인"
+                            "url": "https://programmers.co.kr" + a['href'],
+                            "host": "Programmers", "date": "상세 확인"
                         })
-        except Exception as e:
-            print(f"Programmers Error: {e}")
-        return results
+            return results
+        except: pass
+        return []
 
     def fetch_devevent(self):
-        """국내 IT 행사 큐레이션 '데브이벤트' 수집"""
-        results = []
         try:
-            # 해커톤 카테고리/태그 기반 (비공식 API 또는 페이지)
-            url = "https://dev-event.vercel.app/api/events" # 데브이벤트는 오픈소스로 관리되는 경우가 많음
-            res = requests.get(url, headers=self.headers, timeout=15)
+            # 웹페이지 대신 개발자가 관리하는 GitHub의 Raw JSON을 직접 타격 (차단 0%)
+            url = "https://raw.githubusercontent.com/one-meter/dev-event/master/lib/events.json"
+            res = requests.get(url, timeout=15)
             if res.status_code == 200:
-                events = res.json()
-                for e in events:
-                    title = e.get('title', '')
-                    if '해커톤' in title or 'Hackathon' in title:
-                        results.append({
-                            "title": f"🇰🇷 [데브이벤트] {title}",
-                            "url": e.get('link', ''),
-                            "host": "DevEvent",
-                            "date": e.get('period', '확인필요')
-                        })
-        except:
-            # API 실패 시 페이지 크롤링으로 백업
-            try:
-                url = "https://dev-event.vercel.app/"
-                res = requests.get(url, headers=self.headers, timeout=15)
-                soup = BeautifulSoup(res.text, 'html.parser')
-                # 텍스트 내 '해커톤' 포함 링크 탐색
-                for a in soup.find_all('a'):
-                    if '해커톤' in a.text:
-                        results.append({
-                            "title": f"🇰🇷 [데브이벤트] {a.text.strip()}",
-                            "url": a['href'],
-                            "host": "DevEvent",
-                            "date": "확인필요"
-                        })
-            except: pass
-        return results
+                now = datetime.now().strftime('%Y-%m-%d')
+                return [{"title": f"🇰🇷 [데브이벤트] {e['title']}", "url": e['link'], "host": "DevEvent", "date": e['startDate']} 
+                        for e in res.json() if ('해커톤' in e['title'] or 'Hackathon' in e['title']) and e.get('endDate', '9999-12-31') >= now]
+        except: pass
+        return []
 
     def fetch_goorm(self):
-        """구름(goorm) 해커톤 섹션 수집"""
-        results = []
         try:
+            # 구름은 최근 '에듀'와 '레벨' 섹션이 통합되는 추세입니다.
             url = "https://level.goorm.io/l/challenge"
             res = requests.get(url, headers=self.headers, timeout=15)
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                # 구름톤 등 챌린지 카드 추출
-                for card in soup.select('.challenge-card-item'):
-                    title = card.select_one('.card-title').text.strip()
-                    link = "https://level.goorm.io" + card.select_one('a')['href']
-                    results.append({
-                        "title": f"🇰🇷 [구름] {title}",
-                        "url": link,
-                        "host": "goorm",
-                        "date": "일정확인"
-                    })
-        except Exception as e:
-            print(f"goorm Error: {e}")
-        return results
+            soup = BeautifulSoup(res.text, 'html.parser')
+            results = []
+            # 카드 레이아웃의 공통 부모 탐색
+            for item in soup.find_all(['div', 'a'], class_=re.compile(r'card|item|challenge')):
+                title_el = item.find(['h3', 'h4', 'div'], class_=re.compile(r'title|name'))
+                if title_el:
+                    title = title_el.get_text(strip=True)
+                    link_el = item if item.name == 'a' else item.find('a')
+                    if link_el and link_el.get('href'):
+                        results.append({
+                            "title": f"🇰🇷 [구름] {title}",
+                            "url": "https://level.goorm.io" + link_el['href'],
+                            "host": "goorm", "date": "상세 확인"
+                        })
+            return results
+        except: pass
+        return []
 
     def run(self):
         print("🔍 해커톤 정보 수집을 시작합니다...")
