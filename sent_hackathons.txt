@@ -252,3 +252,19 @@ HackAI
 HackNewHaven 2026
 Appsprint
 Somnia Reactivity Mini Hackathon
+HackCU12
+AthenaHacks
+HackDartmouth XI
+Global Hack Week: GenAI
+Zen-Hack AI Hackathon
+HackBio'26
+KLEOS 4.0
+HackIndia Spark 4 – East NCR Growth Region
+InXiteOut - North India Agentic AI Hackathon - Xpecto'26
+CryptoForge
+CryptNite 2026- National Cybersecurity CTF
+Echiesta 2K26 – Cyber CTF Challenge
+Ahouba: Competitive Programming - Code Senpai
+Nexus Aescode
+AWS Prompt the Planet Challenge
+MunichTech Innovation Hackathon 2026 – Build Applied solutions for Industry
