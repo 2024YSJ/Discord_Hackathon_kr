@@ -280,3 +280,4 @@ AI Explore 2K26
 GDG BoB: Battle of Brains
 Software Hackathon
 🇰🇷 [캠퍼스픽] 2026 티슈 해커톤형 팀업 공모전
+Hack with YO: Designing Smart DeFi Savings
