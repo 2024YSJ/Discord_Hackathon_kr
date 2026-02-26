@@ -301,3 +301,21 @@ Stanford RNA 3D Folding Part 2
 Deep Past Challenge - Translate Akkadian to English
 March Machine Learning Mania 2026
 Predicting Heart Disease
+MariaDB Python HackathonOct 6, 2025 UTC (UTC)Prizes4191
+QIE Blockchain Hackathon 2025Oct 1, 2025 UTC (UTC)Prizes3953
+Support
+🇰🇷 [DACON] Aimers 8기 : 모델 경량화 온라인 해커톤
+🇰🇷 [DACON] 피싱·스캠 예방을 위한 서비스 개발 경진대회
+🇰🇷 [DACON] HAI(하이)! - Hecto AI Challenge : 2025 하반기 헥토 채용 AI 경진대회
+🇰🇷 [DACON] 데이콘 x BDA 제 2회 학습자 수료 예측 AI 경진대회
+🇰🇷 [DACON] 한양대 X 현대엔지비 산업체 제조 환경 기반 문제해결 AI Agent 해커톤
+🇰🇷 [DACON] Track1 알고리즘 부문 : K리그-서울시립대 공개 AI 경진대회
+🇰🇷 [DACON] Track2 아이디어 개발 부문 : K리그-서울시립대 공개 AI 경진대회
+🇰🇷 [DACON] 스마트 제조 AI Agent <본선> 해커톤 2025
+🇰🇷 [DACON] 제2회 Medical AI (MAI) 경진대회
+🇰🇷 [DACON] 스마트 제조 AI Agent 해커톤 2025
+🇰🇷 [DACON] 제3회 국민대학교 AI빅데이터 분석 경진대회
+🇰🇷 [DACON] 2025 새싹 해커톤
+🇰🇷 [DACON] 파주 시민 AI 혁신 아이디어 경진대회
+🇰🇷 [DACON] 2025 롯데이노베이트 프롬프트 엔지니어링 해커톤
+🇰🇷 [DACON] 운수종사자 인지적 특성 데이터를 활용한 교통사고 위험 예측 AI 경진대회
