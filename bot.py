@@ -176,6 +176,15 @@ class HackathonBot:
         return []
 
     def fetch_kaggle(self):
+                # bot.py 내부 fetch_kaggle 함수 시작 부분에 추가
+        username = os.environ.get('KAGGLE_USERNAME', '')
+        key = os.environ.get('KAGGLE_KEY', '')
+        
+        print(f"DEBUG: Username length: {len(username)}")
+        print(f"DEBUG: Key length: {len(key)}")
+        
+        if len(username) == 0 or len(key) == 0:
+            print("❌ 에러: 환경 변수가 비어있습니다. GitHub Secrets 설정을 확인하세요.")
         username = os.environ.get('KAGGLE_USERNAME')
         key = os.environ.get('KAGGLE_KEY')
         
@@ -319,10 +328,6 @@ class HackathonBot:
                 return results
         except Exception as e:
             print(f"DevEvent 크롤링 예외 발생: {e}")
-        return []
-
-    def fetch_goorm(self):
-        # level.goorm.io는 Vue SPA로 서버사이드 렌더링이 없어 크롤링 불가
         return []
 
     def fetch_wevity(self):
@@ -516,7 +521,6 @@ class HackathonBot:
             ("DoraHacks", self.fetch_dorahacks),
             ("Programmers", self.fetch_programmers),
             ("DevEvent", self.fetch_devevent),
-            ("goorm", self.fetch_goorm),
             ("Wevity", self.fetch_wevity),
             ("CampusPick", self.fetch_campuspick),
             ("AIConnect", self.fetch_aiconnect),
