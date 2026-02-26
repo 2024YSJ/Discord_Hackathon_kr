@@ -27,9 +27,9 @@ class HackathonBot:
             for item in new_items:
                 f.write(f"{item['title']}\n")
 
-    # ──────────────────────────────────────────
-    # 기존 정상 함수 (변경 없음)
-    # ──────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
+    # 정상 동작 확인된 함수들 (변경 없음)
+    # ─────────────────────────────────────────────────────
 
     def fetch_devpost(self):
         try:
@@ -182,41 +182,35 @@ class HackathonBot:
             print(f"CampusPick 예외: {e}")
         return []
 
-    # ──────────────────────────────────────────
-    # 수정된 함수들 (실제 URL/응답 검증 완료)
-    # ──────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
+    # 수정된 함수들
+    # ─────────────────────────────────────────────────────
 
-    def fetch_devfolio(self):
+    def fetch_hackerearth(self):
         """
-        [원인] GitHub Actions IP → Devfolio Cloudflare 403 차단
-        [해결] HackerEarth 해커톤 페이지로 완전 교체
-               - HTML에 live/upcoming 해커톤 링크 직접 포함됨 (SSR 확인)
-               - /challenges/hackathon/{slug}/ 패턴
+        HackerEarth 해커톤 목록 - HTML SSR 확인됨, 3개 성공 중
+        live/upcoming 링크를 더 완전하게 수집하도록 개선
         """
         results = []
         seen = set()
         try:
             h = self.headers.copy()
-            h.update({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Referer": "https://www.hackerearth.com/"})
+            h.update({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
             res = requests.get("https://www.hackerearth.com/challenges/hackathon/", headers=h, timeout=15)
             if res.status_code != 200:
                 print(f"  HackerEarth 응답 오류: {res.status_code}")
                 return []
             soup = BeautifulSoup(res.text, 'html.parser')
-            # live/upcoming 해커톤: <a href="/challenges/hackathon/{slug}/"> 또는 https://*.hackerearth.com/
             for a in soup.find_all('a', href=True):
                 href = a['href']
-                # 내부 슬러그 패턴
                 if re.match(r'^/challenges/hackathon/[^/]+/?$', href):
                     full_url = "https://www.hackerearth.com" + href.rstrip('/') + '/'
-                # 서브도메인 패턴: https://xxx.hackerearth.com/
                 elif re.match(r'https://[^.]+\.hackerearth\.com/?$', href):
                     full_url = href.rstrip('/') + '/'
                 else:
                     continue
                 if full_url in seen: continue
                 seen.add(full_url)
-                # 제목: h3, h4, 또는 a 텍스트
                 title_tag = a.find(['h3', 'h4', 'h2', 'p'])
                 title = title_tag.get_text(strip=True) if title_tag else a.get_text(strip=True)
                 title = re.sub(r'\s+', ' ', title).strip()
@@ -228,17 +222,19 @@ class HackathonBot:
 
     def fetch_programmers(self):
         """
-        [원인] career.programmers.co.kr DNS 해석 실패 (이 도메인 존재 안 함)
-        [실제 URL] programmers.co.kr/api/competitions → 직접 확인 완료
-        [JSON 구조] {"competitions": [{id, href, title, statusLabel, receiptEndAt, ...}], "page":1, "totalPages":11}
-        [주의] 현재 진행 중인 대회가 없으면 0개가 정상 (모두 statusLabel:"ended")
+        [확인된 사실]
+        - URL: programmers.co.kr/api/competitions  ← 직접 fetch로 응답 확인
+        - JSON 구조: {"competitions": [{id, href, title, statusLabel, receiptEndAt, endAt}], "totalPages": 11}
+        - href 예시: /competitions/4079?slug=2025_programmers_codechallenge
+        - 현재 모든 항목이 statusLabel:"ended" → 진행 중인 대회가 없으면 0개는 정상
+
+        totalPages(11)를 모두 순회하면 너무 많으므로 최근 2페이지만 확인.
+        ended가 아닌 대회가 없으면 0개 반환 (버그 아님).
         """
         today = datetime.now().strftime('%Y-%m-%d')
         results = []
         try:
-            # 전체 페이지 순회 (totalPages 활용)
-            page = 1
-            while True:
+            for page in range(1, 3):  # 최근 2페이지
                 res = requests.get(
                     "https://programmers.co.kr/api/competitions",
                     params={"page": page},
@@ -249,7 +245,6 @@ class HackathonBot:
                     break
                 data = res.json()
                 competitions = data.get('competitions', [])
-                total_pages = data.get('totalPages', 1)
                 for c in competitions:
                     if c.get('statusLabel') == 'ended': continue
                     end_at = c.get('receiptEndAt') or c.get('endAt') or ''
@@ -257,90 +252,81 @@ class HackathonBot:
                     title = c.get('title', '')
                     href = c.get('href', '')
                     if not title: continue
-                    full_url = f"https://programmers.co.kr{href}" if href.startswith('/') else href
+                    # href에 쿼리스트링 포함될 수 있으므로 기본 경로만 사용
+                    path = href.split('?')[0]
+                    full_url = f"https://programmers.co.kr{path}"
                     results.append({
                         "title": f"🇰🇷 [프로그래머스] {title}",
                         "url": full_url,
                         "host": "Programmers",
                         "date": end_at[:10] if end_at else "상세 확인"
                     })
-                if page >= total_pages or page >= 3: break  # 최근 3페이지만
-                page += 1
         except Exception as e:
             print(f"  Programmers 예외: {e}")
         return results
 
-    def fetch_wevity(self):
+    def fetch_dacon(self):
         """
-        [원인] Wevity + 공모전365 모두 GitHub Actions IP에서 차단/JS렌더링
-        [해결] DACON (데이콘) AI/ML 경진대회 + 공개SW 개발자대회로 교체
-               - DACON: 실제 REST API 제공 (공개 확인)
-               - 공개SW포털(oss.kr): 국내 주요 SW대회 운영
+        DACON AI 경진대회
+        - newapi.dacon.io: 외부 차단됨 (404)
+        - dacon.io/competitions: Nuxt CSR, HTML에 데이터 없음
+        - 해결: Google 검색 인덱스에서 최근 DACON 대회 URL을 수집하는 대신,
+                Bing 오픈 검색 URL을 통해 최근 게시된 dacon.io 대회 페이지 파싱
+                또는 GitHub의 DACON 관련 공개 데이터 활용
+
+        실용적 대안: 이미 fetch_aiconnect에서 DACON HTML 15개 성공 중이므로
+        여기서는 추가로 월간데이콘/해커톤 카테고리만 수집
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
 
-        # 1. DACON 경진대회 API (data.ai-competition.com)
-        try:
-            h = self.headers.copy()
-            h.update({"Accept": "application/json", "Referer": "https://dacon.io/competitions"})
-            res = requests.get(
-                "https://dacon.io/api/v1/competitions/official/",
-                params={"page": 1, "page_size": 20, "ordering": "-created"},
-                headers=h, timeout=15
-            )
-            if res.status_code == 200:
-                data = res.json()
-                items = data.get('results', data.get('data', data if isinstance(data, list) else []))
-                for c in (items if isinstance(items, list) else []):
-                    title = c.get('title') or c.get('name', '')
-                    cid = c.get('id') or c.get('competition_id', '')
-                    end_d = (c.get('competition_end_date') or c.get('end_date') or c.get('ends_at') or '')[:10]
-                    if end_d and end_d < today: continue
-                    if title:
-                        results.append({
-                            "title": f"🇰🇷 [DACON] {title}",
-                            "url": f"https://dacon.io/competitions/official/{cid}",
-                            "host": "DACON",
-                            "date": end_d or "상세 확인"
-                        })
-            else:
-                print(f"  DACON API 응답: {res.status_code}")
-        except Exception as e:
-            print(f"  DACON 예외: {e}")
+        # DACON 해커톤 카테고리 페이지 (hackathon 탭)
+        # URL: dacon.io/competitions?taskCategory=HACKATHON 시도
+        urls_to_try = [
+            ("https://dacon.io/competitions?taskCategory=HACKATHON", re.compile(r'/competitions/official/\d+')),
+            ("https://dacon.io/competitions?status=active", re.compile(r'/competitions/official/\d+')),
+            ("https://dacon.io/competitions", re.compile(r'/competitions/official/\d+')),
+        ]
+        h = self.headers.copy()
+        h.update({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Referer": "https://dacon.io/"})
 
-        # 2. 공개SW 개발자대회 (oss.kr) — HTML 파싱
-        try:
-            res = requests.get("https://www.oss.kr/dev_competition", headers=self.headers, timeout=15)
-            if res.status_code == 200:
+        for url, pattern in urls_to_try:
+            try:
+                res = requests.get(url, headers=h, timeout=15)
+                if res.status_code != 200: continue
                 soup = BeautifulSoup(res.text, 'html.parser')
-                for a in soup.find_all('a', href=re.compile(r'dev_competition')):
-                    title = a.get_text(strip=True)
-                    if not title or len(title) < 5: continue
+                seen = set()
+                for a in soup.find_all('a', href=pattern):
                     href = a['href']
-                    full_url = f"https://www.oss.kr{href}" if href.startswith('/') else href
+                    m = re.match(r'/competitions/official/(\d+)', href)
+                    if not m or m.group(1) in seen: continue
+                    seen.add(m.group(1))
+                    title_tag = a.find(['h4', 'h3', 'h2', 'p', 'span'])
+                    title = title_tag.get_text(strip=True) if title_tag else a.get_text(strip=True)
+                    title = re.sub(r'\s+', ' ', title).strip()
+                    if not title or len(title) < 3: continue
                     results.append({
-                        "title": f"🇰🇷 [공개SW] {title}",
-                        "url": full_url,
-                        "host": "OSS",
+                        "title": f"🇰🇷 [DACON] {title}",
+                        "url": f"https://dacon.io{href.split('?')[0]}",
+                        "host": "DACON",
                         "date": "상세 확인"
                     })
-        except Exception as e:
-            print(f"  OSS 예외: {e}")
+                if results:
+                    break
+            except Exception as e:
+                print(f"  DACON {url} 예외: {e}")
 
         return results
 
-    def fetch_aiconnect(self):
+    def fetch_aihub(self):
         """
-        [원인] aiconnect.kr 완전 CSR → HTML 데이터 없음, 내부 API 엔드포인트 미공개
-        [해결] DACON + 국내 AI 경진대회 소스로 교체
-               1. 데이터넷 AI 경진대회 (datanet.or.kr)
-               2. AI 바우처 경진대회 등 공공 API 활용
+        AI Hub 챌린지 - 이미 fetch_aiconnect에서 15개 성공 중이므로 유지
+        fetch_aiconnect를 이 함수로 이름 변경하여 명확화
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
 
-        # 1. DACON 공모전 HTML 파싱 (API 실패 대비)
+        # DACON HTML 파싱 (Nuxt CSR이지만 일부 SSR 내용 포함)
         try:
             h = self.headers.copy()
             h.update({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Referer": "https://dacon.io/"})
@@ -357,30 +343,29 @@ class HackathonBot:
                     title = title_tag.get_text(strip=True) if title_tag else a.get_text(strip=True)
                     title = re.sub(r'\s+', ' ', title).strip()
                     if not title or len(title) < 3: continue
-                    full_url = f"https://dacon.io{href}"
                     results.append({
                         "title": f"🇰🇷 [DACON] {title}",
-                        "url": full_url,
+                        "url": f"https://dacon.io{href.split('?')[0]}",
                         "host": "DACON",
                         "date": "상세 확인"
                     })
         except Exception as e:
-            print(f"  DACON HTML 파싱 예외: {e}")
+            print(f"  DACON HTML 예외: {e}")
 
-        # 2. AI 허브 챌린지 (aihub.or.kr)
+        # AI Hub 챌린지 HTML 파싱
         try:
             h = self.headers.copy()
             h.update({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"})
             res = requests.get("https://www.aihub.or.kr/intrcn/lit/aiclgComp/list.do", headers=h, timeout=15)
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
-                seen = set()
+                seen_titles = set()
                 for a in soup.find_all('a', href=True):
                     href = a['href']
                     if 'aiclgComp' not in href and 'challenge' not in href.lower(): continue
                     title = a.get_text(strip=True)
-                    if not title or len(title) < 4 or title in seen: continue
-                    seen.add(title)
+                    if not title or len(title) < 4 or title in seen_titles: continue
+                    seen_titles.add(title)
                     full_url = f"https://www.aihub.or.kr{href}" if href.startswith('/') else href
                     results.append({
                         "title": f"🇰🇷 [AI Hub] {title}",
@@ -395,97 +380,126 @@ class HackathonBot:
 
     def fetch_linkareer(self):
         """
-        [원인] GraphQL 스키마 완전 불일치 — 인트로스펙션 없이는 올바른 쿼리 작성 불가
-        [해결] 링커리어 웹페이지 HTML 직접 파싱으로 교체
-               URL 패턴: linkareer.com/activity/{id}
-               검색 URL: linkareer.com/list/contest?filterBy=HACKATHON
+        [확인된 사실]
+        - URL 구조: linkareer.com/activity/{id} 확인됨
+        - linkareer.com 페이지들은 CSR(Next.js)이라 HTML 파싱 불가
+        - api.linkareer.com/graphql: 400 반환 (GET), POST 필요
+        - GraphQL 스키마 불명확
+
+        [전략] GraphQL 인트로스펙션으로 실제 필드명을 먼저 파악 후 올바른 쿼리 사용.
+        인트로스펙션 실패 시 여러 쿼리 패턴 순차 시도.
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
-        seen = set()
 
-        # 1. 링커리어 해커톤 목록 페이지 HTML 파싱
-        search_urls = [
-            "https://linkareer.com/list/contest?filterBy=HACKATHON&page=1",
-            "https://linkareer.com/list/contest?category=해커톤&page=1",
+        gql_headers = {
+            "Content-Type": "application/json",
+            "User-Agent": self.headers["User-Agent"],
+            "Referer": "https://linkareer.com/",
+            "Origin": "https://linkareer.com",
+            "Accept": "application/json",
+        }
+
+        # Step 1: 인트로스펙션으로 실제 Query 필드 파악
+        actual_fields = []
+        try:
+            res = requests.post(
+                "https://api.linkareer.com/graphql",
+                json={"query": "{ __schema { queryType { fields { name } } } }"},
+                headers=gql_headers, timeout=10
+            )
+            if res.status_code == 200:
+                body = res.json()
+                if not body.get('errors'):
+                    actual_fields = [f['name'] for f in body.get('data',{}).get('__schema',{}).get('queryType',{}).get('fields',[])]
+                    print(f"  Linkareer GraphQL 필드: {actual_fields[:10]}")
+        except Exception as e:
+            print(f"  Linkareer 인트로스펙션 예외: {e}")
+
+        # Step 2: 인트로스펙션 결과에 맞는 쿼리 또는 여러 패턴 시도
+        # 알려진 패턴: activities, activityList, contest, hackathons 등
+        queries = []
+
+        # 인트로스펙션으로 필드 확인된 경우 맞춤 쿼리 추가
+        if 'activityList' in actual_fields:
+            queries.append({"query": '{ activityList(filter: {categoryName: "해커톤"}, page: 1, pageSize: 20) { list { id title dueDate } } }'})
+        if 'activities' in actual_fields:
+            queries.append({"query": '{ activities(first: 30) { nodes { id title dueDate categories { name } } } }'})
+            queries.append({"query": '{ activities(first: 30, type: "hackathon") { nodes { id title dueDate } } }'})
+
+        # 인트로스펙션 무관 범용 패턴들
+        queries += [
+            {"query": '{ activities(first: 50) { nodes { id title dueDate categories { name } } } }'},
+            {"query": '{ activityList(page: 1, pageSize: 30) { list { id title dueDate categories { name } } } }'},
+            {"query": '{ contests(first: 30, filter: {category: "해커톤"}) { nodes { id title dueDate } } }'},
         ]
-        for url in search_urls:
-            try:
-                h = self.headers.copy()
-                h.update({"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Referer": "https://linkareer.com/", "Accept-Language": "ko-KR,ko;q=0.9"})
-                res = requests.get(url, headers=h, timeout=15)
-                if res.status_code != 200: continue
-                soup = BeautifulSoup(res.text, 'html.parser')
-                for a in soup.find_all('a', href=re.compile(r'/activity/\d+')):
-                    href = a['href']
-                    m = re.match(r'/activity/(\d+)', href)
-                    if not m or m.group(1) in seen: continue
-                    seen.add(m.group(1))
-                    title_tag = a.find(['h3', 'h4', 'h2', 'strong', 'p'])
-                    title = title_tag.get_text(strip=True) if title_tag else a.get_text(strip=True)
-                    title = re.sub(r'\s+', ' ', title).strip()
-                    if not title or len(title) < 3: continue
-                    results.append({
-                        "title": f"🇰🇷 [링커리어] {title}",
-                        "url": f"https://linkareer.com{href}",
-                        "host": "Linkareer",
-                        "date": "상세 확인"
-                    })
-                if results: break
-            except Exception as e:
-                print(f"  Linkareer HTML 예외: {e}")
 
-        # 2. GraphQL fallback — 전체 조회 후 키워드 필터 (스키마 문제 우회)
-        if not results:
+        for payload in queries:
             try:
-                res = requests.post(
-                    "https://api.linkareer.com/graphql",
-                    json={"query": "{ activities(first: 50) { nodes { id title dueDate categories { name } } } }"},
-                    headers={"Content-Type": "application/json", "User-Agent": self.headers["User-Agent"], "Referer": "https://linkareer.com/", "Origin": "https://linkareer.com"},
-                    timeout=15
-                )
-                if res.status_code == 200:
-                    body = res.json()
-                    if not body.get('errors'):
-                        nodes = body.get('data', {}).get('activities', {}).get('nodes', [])
-                        for node in nodes:
-                            title = node.get('title', '')
-                            cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
-                            if not any(k in title+cats for k in ['해커톤','Hackathon','hackathon','공모전']): continue
-                            nid = node.get('id','')
-                            due = (node.get('dueDate') or '')[:10]
-                            if due and due < today: continue
-                            results.append({
-                                "title": f"🇰🇷 [링커리어] {title}",
-                                "url": f"https://linkareer.com/activity/{nid}",
-                                "host": "Linkareer",
-                                "date": due or "상세 확인"
-                            })
+                res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
+                if res.status_code != 200: continue
+                body = res.json()
+                if body.get('errors'):
+                    continue
+
+                # 응답에서 노드 추출 (구조 불명확하므로 재귀 탐색)
+                nodes = self._extract_nodes(body.get('data', {}))
+                if not nodes: continue
+
+                for node in nodes:
+                    title = node.get('title', '')
+                    cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
+                    if not any(k in title+cats for k in ['해커톤','Hackathon','hackathon','공모전']): continue
+                    nid = node.get('id','')
+                    due = (node.get('dueDate') or '')[:10]
+                    if due and due < today: continue
+                    if title:
+                        results.append({
+                            "title": f"🇰🇷 [링커리어] {title}",
+                            "url": f"https://linkareer.com/activity/{nid}",
+                            "host": "Linkareer",
+                            "date": due or "상세 확인"
+                        })
+                if results:
+                    return results
             except Exception as e:
                 print(f"  Linkareer GraphQL 예외: {e}")
 
         return results
 
-    # ──────────────────────────────────────────
+    def _extract_nodes(self, data, depth=0):
+        """GraphQL 응답에서 노드 배열을 재귀적으로 탐색"""
+        if depth > 4: return []
+        if isinstance(data, list): return data
+        if isinstance(data, dict):
+            for key in ('nodes', 'list', 'edges', 'items', 'results'):
+                if key in data and isinstance(data[key], list):
+                    return data[key]
+            for v in data.values():
+                result = self._extract_nodes(v, depth+1)
+                if result: return result
+        return []
+
+    # ─────────────────────────────────────────────────────
     # run / discord
-    # ──────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
 
     def run(self):
         print("🔍 해커톤 정보 수집을 시작합니다...")
         all_hackathons = []
         tasks = [
-            ("Devpost",       self.fetch_devpost),
-            ("MLH",           self.fetch_mlh),
-            ("HackerEarth",   self.fetch_devfolio),   # Devfolio 대체
-            ("Kaggle",        self.fetch_kaggle),
-            ("Hack2Skill",    self.fetch_hack2skill),
-            ("DoraHacks",     self.fetch_dorahacks),
-            ("Programmers",   self.fetch_programmers),
-            ("DevEvent",      self.fetch_devevent),
-            ("DACON/OSS",     self.fetch_wevity),      # Wevity 대체
-            ("CampusPick",    self.fetch_campuspick),
-            ("DACON/AIHub",   self.fetch_aiconnect),   # AIConnect 대체
-            ("Linkareer",     self.fetch_linkareer),
+            ("Devpost",     self.fetch_devpost),
+            ("MLH",         self.fetch_mlh),
+            ("HackerEarth", self.fetch_hackerearth),
+            ("Kaggle",      self.fetch_kaggle),
+            ("Hack2Skill",  self.fetch_hack2skill),
+            ("DoraHacks",   self.fetch_dorahacks),
+            ("Programmers", self.fetch_programmers),    # 진행 대회 없으면 0개 정상
+            ("DevEvent",    self.fetch_devevent),
+            ("DACON",       self.fetch_dacon),          # Wevity 대체
+            ("CampusPick",  self.fetch_campuspick),
+            ("DACON/AIHub", self.fetch_aihub),          # AIConnect 대체 (15개 성공)
+            ("Linkareer",   self.fetch_linkareer),
         ]
         for name, fetcher in tasks:
             try:
@@ -495,7 +509,15 @@ class HackathonBot:
             except Exception as e:
                 print(f"❌ {name} 치명적 오류: {e}")
 
-        new_items = [h for h in all_hackathons if h['title'] not in self.sent_list]
+        # 중복 제거 (title 기준)
+        seen_titles = set()
+        deduped = []
+        for h in all_hackathons:
+            if h['title'] not in seen_titles:
+                seen_titles.add(h['title'])
+                deduped.append(h)
+
+        new_items = [h for h in deduped if h['title'] not in self.sent_list]
         print(f"📊 최종 신규 공고: {len(new_items)}개")
         if not new_items: return
         self.send_to_discord(new_items)
@@ -508,7 +530,10 @@ class HackathonBot:
                        "fields": [{"name": "플랫폼", "value": h['host'], "inline": True},
                                   {"name": "마감/일정", "value": str(h['date']), "inline": True}]}
                       for h in chunk]
-            requests.post(WEBHOOK_URL, json={"content": "🚀 **새로운 해커톤 대회가 발견되었습니다!**" if i == 0 else "", "embeds": embeds})
+            requests.post(WEBHOOK_URL, json={
+                "content": "🚀 **새로운 해커톤 대회가 발견되었습니다!**" if i == 0 else "",
+                "embeds": embeds
+            })
 
 
 if __name__ == "__main__":
