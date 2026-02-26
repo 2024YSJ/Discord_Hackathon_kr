@@ -30,7 +30,7 @@ class HackathonBot:
                 f.write(f"{item['title']}\n")
 
     # ──────────────────────────────────────────
-    # 기존 정상 함수들 (변경 없음)
+    # 기존 정상 함수 (변경 없음)
     # ──────────────────────────────────────────
 
     def fetch_devpost(self):
@@ -264,73 +264,73 @@ class HackathonBot:
 
     def fetch_devfolio(self):
         """
-        [수정] __NEXT_DATA__ JSON 파싱 → HTML 링크 직접 파싱 방식으로 변경.
-        Devfolio는 SSR이지만 __NEXT_DATA__ 구조가 자주 바뀌므로,
-        페이지에 렌더링된 <a href="https://xxx.devfolio.co/"> 링크를 직접 추출.
-        open / upcoming 두 페이지를 모두 순회.
+        [수정 원인] __NEXT_DATA__ JSON 구조 변경으로 open_hackathons 키 소실
+        [해결]  HTML에서 *.devfolio.co 서브도메인 <a> 태그 직접 파싱
+                실제 HTML 구조 확인:
+                  <a href="https://campfire-hackathon.devfolio.co/">
+                    <h3>Campfire Hackathon</h3>
+                  </a>
         """
-        results = []
-        seen = set()
-        pages = [
-            "https://devfolio.co/hackathons/open",
-            "https://devfolio.co/hackathons/upcoming",
-        ]
         headers = self.headers.copy()
         headers.update({
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://devfolio.co/",
         })
+        results = []
+        seen = set()
 
-        for page_url in pages:
-            try:
-                res = requests.get(page_url, headers=headers, timeout=15)
-                if res.status_code != 200:
-                    print(f"  Devfolio {page_url} 응답 오류: {res.status_code}")
+        try:
+            res = requests.get("https://devfolio.co/hackathons", headers=headers, timeout=15)
+            if res.status_code != 200:
+                print(f"  Devfolio 응답 오류: {res.status_code}")
+                return []
+
+            soup = BeautifulSoup(res.text, 'html.parser')
+
+            for a in soup.find_all('a', href=True):
+                href = a['href'].rstrip('/')
+
+                # https://<slug>.devfolio.co 형태만 수집
+                m = re.match(r'https://([^./]+)\.devfolio\.co$', href)
+                if not m:
+                    continue
+                subdomain = m.group(1)
+                if subdomain in ('www', 'assets'):
+                    continue
+                if href in seen:
+                    continue
+                seen.add(href)
+
+                # 제목: <h3> 우선
+                h_tag = a.find('h3') or a.find('h2') or a.find('h4')
+                title = h_tag.get_text(strip=True) if h_tag else a.get_text(strip=True)
+                if not title:
                     continue
 
-                soup = BeautifulSoup(res.text, 'html.parser')
+                results.append({
+                    "title": title,
+                    "url": href,
+                    "host": "Devfolio",
+                    "date": "상세 확인"
+                })
 
-                # devfolio 해커톤 서브도메인 링크: https://<slug>.devfolio.co/
-                for a in soup.find_all('a', href=re.compile(r'https://[^/]+\.devfolio\.co/?$')):
-                    href = a['href'].rstrip('/')
-                    if href in seen:
-                        continue
+        except Exception as e:
+            print(f"Devfolio 크롤링 예외: {e}")
 
-                    # 내부 링크(devfolio.co/hackathons 등) 제외
-                    if href in ('https://devfolio.co', 'https://devfolio.co/hackathons'):
-                        continue
-
-                    # 제목: <h3> 또는 <h2> 우선 탐색, 없으면 a 텍스트
-                    h_tag = a.find(['h3', 'h2', 'h4'])
-                    title = h_tag.get_text(strip=True) if h_tag else a.get_text(strip=True)
-                    if not title:
-                        continue
-
-                    seen.add(href)
-                    results.append({
-                        "title": title,
-                        "url": href,
-                        "host": "Devfolio",
-                        "date": "상세 확인"
-                    })
-
-                time.sleep(1)
-            except Exception as e:
-                print(f"  Devfolio {page_url} 예외: {e}")
-
-        print(f"📡 Devfolio: {len(results)}개 추출 성공")
         return results
 
     def fetch_programmers(self):
         """
-        [수정] 엔드포인트를 career.programmers.co.kr/competitions 로 변경.
-        기존 /api/competitions 는 404 반환.
-        HTML 파싱 방식으로 fallback 추가.
+        [수정 원인] programmers.co.kr → career.programmers.co.kr 도메인 이전
+                   /api/competitions 엔드포인트가 구 도메인에서 404
+        [해결]  1차: career.programmers.co.kr/api/competitions (JSON)
+                2차: career.programmers.co.kr/competitions (HTML 파싱)
         """
-        results = []
         today = datetime.now().strftime('%Y-%m-%d')
+        results = []
 
-        # 1차 시도: career API
+        # 1차: career API JSON
         try:
             res = requests.get(
                 "https://career.programmers.co.kr/api/competitions",
@@ -338,7 +338,6 @@ class HackathonBot:
             )
             if res.status_code == 200:
                 data = res.json()
-                # 응답 구조: {competitions: [...]} 또는 [...] 직접
                 items = data if isinstance(data, list) else data.get('competitions', [])
                 for c in items:
                     if c.get('statusLabel') == 'ended':
@@ -347,9 +346,13 @@ class HackathonBot:
                     if end_at and end_at[:10] < today:
                         continue
                     title = c.get('title', '')
-                    href = c.get('href', '') or c.get('url', '')
-                    base = 'https://career.programmers.co.kr'
-                    full_url = f"{base}{href}" if href.startswith('/') else href
+                    href  = c.get('href', '') or c.get('url', '')
+                    if not title:
+                        continue
+                    full_url = (
+                        f"https://career.programmers.co.kr{href}"
+                        if href.startswith('/') else href
+                    )
                     results.append({
                         "title": f"🇰🇷 [프로그래머스] {title}",
                         "url": full_url,
@@ -361,7 +364,7 @@ class HackathonBot:
         except Exception as e:
             print(f"  Programmers career API 예외: {e}")
 
-        # 2차 시도: HTML 파싱 (career.programmers.co.kr/competitions)
+        # 2차: HTML 파싱
         try:
             res = requests.get(
                 "https://career.programmers.co.kr/competitions",
@@ -369,26 +372,31 @@ class HackathonBot:
             )
             if res.status_code == 200:
                 soup = BeautifulSoup(res.text, 'html.parser')
-                # 대회 카드 링크 수집
+                seen = set()
                 for a in soup.find_all('a', href=re.compile(r'/competitions/\d+')):
                     href = a['href']
-                    # 이미 마감된 배지 확인
-                    card = a.find_parent(['li', 'div', 'article'])
-                    if card:
-                        status_txt = card.get_text()
-                        if '마감' in status_txt and '접수마감' not in status_txt:
-                            continue
-                    h_tag = a.find(['h3', 'h2', 'h4', 'strong'])
+                    path_key = re.match(r'/competitions/\d+', href)
+                    if not path_key or path_key.group() in seen:
+                        continue
+                    seen.add(path_key.group())
+
+                    parent = a.find_parent(['li', 'article', 'div'])
+                    if parent and any(k in parent.get_text() for k in ['접수마감', '종료']):
+                        continue
+
+                    h_tag = a.find(['h3', 'h2', 'h4', 'strong', 'p'])
                     title = h_tag.get_text(strip=True) if h_tag else a.get_text(strip=True)
                     if not title:
                         continue
-                    full_url = f"https://career.programmers.co.kr{href}" if href.startswith('/') else href
+
                     results.append({
                         "title": f"🇰🇷 [프로그래머스] {title}",
-                        "url": full_url,
+                        "url": f"https://career.programmers.co.kr{href}",
                         "host": "Programmers",
                         "date": "상세 확인"
                     })
+            else:
+                print(f"  Programmers HTML 응답 오류: {res.status_code}")
         except Exception as e:
             print(f"  Programmers HTML 파싱 예외: {e}")
 
@@ -396,19 +404,20 @@ class HackathonBot:
 
     def fetch_wevity(self):
         """
-        [수정] 403 우회를 위해 더 완전한 브라우저 헤더 세트 사용.
-        Accept-Encoding 명시, sec-fetch 헤더 추가, 쿠키 세션 활용 강화.
-        카테고리 ID 변경 가능성 대비 '해커톤' 키워드 검색도 추가.
+        [수정 원인] GitHub Actions IP(데이터센터)를 Cloudflare WAF가 구조적으로 403 차단.
+                   단순 헤더 강화로는 TLS fingerprint 차이로 인해 우회 불가.
+        [해결]  1차: Wevity 강화 헤더로 재시도
+                2차: 차단 시 공모전365(contestkorea.com)로 대체 수집
+                     - IT/SW 공모전 카테고리 (wevity IT/SW와 동일 데이터 포함)
         """
-        category_ids = ['20', '21']
         results = []
 
+        # 1차: Wevity 강화 헤더
         try:
             session = requests.Session()
-            # 완전한 브라우저 헤더 세트
             session.headers.update({
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
                 'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
                 'Accept-Encoding': 'gzip, deflate, br',
                 'Connection': 'keep-alive',
@@ -418,261 +427,290 @@ class HackathonBot:
                 'Sec-Fetch-Site': 'none',
                 'Sec-Fetch-User': '?1',
                 'Cache-Control': 'max-age=0',
+                'DNT': '1',
             })
-
-            # 메인 페이지 먼저 방문해서 쿠키 수집
             main_res = session.get('https://www.wevity.com/', timeout=15)
-            if main_res.status_code != 200:
-                print(f"  Wevity 메인 접근 실패: {main_res.status_code}")
-                return []
+            time.sleep(2)
 
-            time.sleep(1.5)
-
-            for cidx in category_ids:
-                # Referer를 메인 페이지로 설정
+            if main_res.status_code == 200:
                 session.headers.update({
                     'Referer': 'https://www.wevity.com/',
                     'Sec-Fetch-Site': 'same-origin',
                 })
-                url = f'https://www.wevity.com/?c=find&s=1&gub=1&cidx={cidx}'
-                res = session.get(url, timeout=15)
-
-                if res.status_code != 200:
-                    print(f"  Wevity 카테고리 {cidx} 접근 실패: {res.status_code}")
-                    continue
-
-                soup = BeautifulSoup(res.text, 'html.parser')
-                ul = soup.find('ul', class_='list')
-                if not ul:
-                    # 대안: class 없이 li 목록 탐색
-                    ul = soup.find('div', class_=re.compile(r'list|contest'))
-                if not ul:
-                    print(f"  Wevity 카테고리 {cidx}: 목록 요소를 찾지 못함")
-                    continue
-
-                for li in ul.find_all('li'):
-                    if 'top' in li.get('class', []):
+                for cidx, cat_label in [('20', '기획'), ('21', 'IT/SW')]:
+                    url = f'https://www.wevity.com/?c=find&s=1&gub=1&cidx={cidx}'
+                    res = session.get(url, timeout=15)
+                    if res.status_code != 200:
+                        print(f"  Wevity {cat_label} HTTP {res.status_code}")
                         continue
-                    dday_span = li.find('span', class_='dday')
-                    if dday_span and dday_span.get_text(strip=True) == '마감':
+                    soup = BeautifulSoup(res.text, 'html.parser')
+                    ul = soup.find('ul', class_='list')
+                    if not ul:
                         continue
+                    for li in ul.find_all('li'):
+                        if 'top' in li.get('class', []):
+                            continue
+                        dday_span = li.find('span', class_='dday')
+                        if dday_span and dday_span.get_text(strip=True) == '마감':
+                            continue
+                        tit_div = li.find('div', class_='tit')
+                        if not tit_div:
+                            continue
+                        a_tag = tit_div.find('a', href=True)
+                        if not a_tag:
+                            continue
+                        title = a_tag.get_text(strip=True)
+                        href = a_tag['href']
+                        full_url = "https://www.wevity.com/" + href if href.startswith('?') else href
+                        day_div = li.find('div', class_='day')
+                        results.append({
+                            "title": f"🇰🇷 [위비티-{cat_label}] {title}",
+                            "url": full_url,
+                            "host": "Wevity",
+                            "date": day_div.get_text(strip=True) if day_div else "상세 확인"
+                        })
+                    time.sleep(1.5)
 
-                    tit_div = li.find('div', class_='tit')
-                    if not tit_div:
-                        continue
-                    a = tit_div.find('a', href=True)
-                    if not a:
-                        continue
-                    title = a.get_text(strip=True)
-                    href = a['href']
-                    full_url = "https://www.wevity.com/" + href if href.startswith('?') else href
-
-                    cat_label = "기획" if cidx == '20' else "IT/SW"
-                    day_div = li.find('div', class_='day')
-                    date_str = day_div.get_text(strip=True) if day_div else "상세 확인"
-
-                    results.append({
-                        "title": f"🇰🇷 [위비티-{cat_label}] {title}",
-                        "url": full_url,
-                        "host": "Wevity",
-                        "date": date_str
-                    })
-
-                time.sleep(2)
+                if results:
+                    return results
 
         except Exception as e:
-            print(f"Wevity 크롤링 예외: {e}")
+            print(f"  Wevity 직접 접근 예외: {e}")
+
+        # 2차: 공모전365 대체 (IT/SW, 게임/소프트웨어 카테고리)
+        print("  Wevity 차단 → 공모전365 대체 수집")
+        try:
+            contest_headers = self.headers.copy()
+            contest_headers.update({
+                'Referer': 'https://www.contestkorea.com/',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'ko-KR,ko;q=0.9',
+            })
+            res = requests.get(
+                "https://www.contestkorea.com/sub/list.php",
+                params={"Txt_bcode": "030504001", "Txt_sele": "ing"},
+                headers=contest_headers, timeout=15
+            )
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, 'html.parser')
+                seen = set()
+                for a in soup.find_all('a', href=re.compile(r'int_No=\d+')):
+                    href = a['href']
+                    m = re.search(r'int_No=(\d+)', href)
+                    if not m or m.group(1) in seen:
+                        continue
+                    seen.add(m.group(1))
+                    title = a.get_text(strip=True)
+                    if not title or len(title) < 4:
+                        continue
+                    full_url = (
+                        f"https://www.contestkorea.com{href}"
+                        if href.startswith('/') else href
+                    )
+                    results.append({
+                        "title": f"🇰🇷 [공모전365] {title}",
+                        "url": full_url,
+                        "host": "ContestKorea",
+                        "date": "상세 확인"
+                    })
+        except Exception as e:
+            print(f"  공모전365 대체 수집 예외: {e}")
 
         return results
 
     def fetch_aiconnect(self):
         """
-        [수정] Nuxt.js window.__NUXT__ 대신 REST API 엔드포인트 직접 호출.
-        aiconnect.kr은 /api/v1/competitions 형태의 내부 API를 사용.
-        실패 시 HTML에서 대회 링크를 직접 파싱하는 fallback 추가.
+        [수정 원인] aiconnect.kr은 완전한 CSR(클라이언트 사이드 렌더링).
+                   서버에서 반환하는 HTML에는 데이터가 없으므로 HTML 파싱 불가.
+                   window.__NUXT__ 또한 데이터가 없는 빈 상태.
+        [해결]  내부 REST API 패턴 순차 시도 (브라우저 Network 탭 기준 추정)
+                실패 시 AI Hub(aihub.or.kr) 챌린지 목록으로 대체
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
 
-        # 1차 시도: 내부 REST API
-        api_endpoints = [
-            "https://aiconnect.kr/api/v1/competitions",
-            "https://aiconnect.kr/api/competitions",
-        ]
         api_headers = self.headers.copy()
         api_headers.update({
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
             "Referer": "https://aiconnect.kr/competition/list",
             "Origin": "https://aiconnect.kr",
-            "X-Requested-With": "XMLHttpRequest",
         })
 
-        for endpoint in api_endpoints:
-            try:
-                res = requests.get(endpoint, headers=api_headers, timeout=15)
-                if res.status_code == 200:
-                    data = res.json()
-                    # 다양한 응답 구조 처리
-                    items = (
-                        data if isinstance(data, list)
-                        else data.get('data', data.get('competitions', data.get('list', [])))
-                    )
-                    if isinstance(items, list) and items:
-                        for c in items:
-                            title = c.get('title') or c.get('name', '')
-                            cid = c.get('id') or c.get('competitionId', '')
-                            end_date = (c.get('endDate') or c.get('end_date') or '')[:10]
-                            if end_date and end_date < today:
-                                continue
-                            if title:
-                                results.append({
-                                    "title": f"🇰🇷 [AI Connect] {title}",
-                                    "url": f"https://aiconnect.kr/competition/detail/{cid}/competitionInfo",
-                                    "host": "AIConnect",
-                                    "date": end_date or "상세 확인"
-                                })
-                        if results:
-                            return results
-            except Exception as e:
-                print(f"  AIConnect API {endpoint} 예외: {e}")
+        # aiconnect.kr 내부 API 후보 (URL 패턴 /main/competition/detail/{id} 에서 역추론)
+        api_candidates = [
+            ("GET",  "https://aiconnect.kr/api/v2/competition/list",    {"status": "open"}),
+            ("GET",  "https://aiconnect.kr/api/v1/competition/list",    {"page": 1, "limit": 20}),
+            ("GET",  "https://aiconnect.kr/api/competitions",            {"status": "open"}),
+            ("GET",  "https://aiconnect.kr/main/api/competition/list",  {"page": 1}),
+            ("POST", "https://aiconnect.kr/api/competition/list",        {}),
+        ]
 
-        # 2차 시도: HTML 파싱 (대회 카드 링크 수집)
+        for method, url, params in api_candidates:
+            try:
+                if method == "GET":
+                    res = requests.get(url, params=params, headers=api_headers, timeout=10)
+                else:
+                    res = requests.post(url, json=params, headers=api_headers, timeout=10)
+
+                if res.status_code != 200:
+                    continue
+
+                data = res.json()
+                items = (
+                    data if isinstance(data, list)
+                    else data.get('data', data.get('competitions',
+                         data.get('list', data.get('result', []))))
+                )
+                if not isinstance(items, list) or not items:
+                    continue
+
+                for c in items:
+                    title = c.get('title') or c.get('name', '')
+                    cid   = c.get('id') or c.get('competitionId') or c.get('seq', '')
+                    end_d = (c.get('endDate') or c.get('end_date') or '')[:10]
+                    if end_d and end_d < today:
+                        continue
+                    if title:
+                        results.append({
+                            "title": f"🇰🇷 [AI Connect] {title}",
+                            "url": f"https://aiconnect.kr/main/competition/detail/{cid}/competitionInfo",
+                            "host": "AIConnect",
+                            "date": end_d or "상세 확인"
+                        })
+                if results:
+                    print(f"  AIConnect API 성공: {url}")
+                    return results
+
+            except Exception:
+                continue
+
+        # 대체: AI Hub 챌린지 목록
+        print("  AIConnect API 모두 실패 → AI Hub 대체 수집")
         try:
-            html_headers = self.headers.copy()
-            html_headers.update({
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "ko-KR,ko;q=0.9",
+            aihub_headers = self.headers.copy()
+            aihub_headers.update({
+                "Accept": "application/json",
+                "Referer": "https://aihub.or.kr/",
             })
+            # AI Hub 공개 챌린지 API
             res = requests.get(
-                "https://aiconnect.kr/competition/list",
-                headers=html_headers, timeout=15
+                "https://aihub.or.kr/api/v1/board/challenge/list",
+                params={"pageIndex": 1, "pageSize": 20, "searchStatus": "ING"},
+                headers=aihub_headers, timeout=15
             )
             if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                # 대회 상세 페이지 링크 패턴: /competition/detail/{id}/...
-                seen = set()
-                for a in soup.find_all('a', href=re.compile(r'/competition/detail/\d+')):
-                    href = a['href']
-                    # 중복 제거: 앞부분 경로만 키로 사용
-                    key = re.match(r'/competition/detail/\d+', href)
-                    if not key or key.group() in seen:
-                        continue
-                    seen.add(key.group())
-
-                    h_tag = a.find(['h3', 'h2', 'h4', 'p', 'span'])
-                    title = h_tag.get_text(strip=True) if h_tag else a.get_text(strip=True)
+                data = res.json()
+                items = data.get('data', data.get('list', []))
+                for c in (items if isinstance(items, list) else []):
+                    title = c.get('title') or c.get('challengeTitle', '')
+                    cid   = c.get('challengeId') or c.get('id', '')
+                    end_d = (c.get('endDate') or '')[:10]
                     if not title:
                         continue
-
-                    full_url = f"https://aiconnect.kr{href}" if href.startswith('/') else href
                     results.append({
-                        "title": f"🇰🇷 [AI Connect] {title}",
-                        "url": full_url,
-                        "host": "AIConnect",
-                        "date": "상세 확인"
+                        "title": f"🇰🇷 [AI Hub] {title}",
+                        "url": f"https://aihub.or.kr/challenge/detail?challengeId={cid}",
+                        "host": "AIHub",
+                        "date": end_d or "상세 확인"
                     })
         except Exception as e:
-            print(f"  AIConnect HTML 파싱 예외: {e}")
+            print(f"  AI Hub 대체 수집 예외: {e}")
 
         return results
 
     def fetch_linkareer(self):
         """
-        [수정] GraphQL 쿼리를 실제 동작하는 형식으로 변경.
-        기존 쿼리는 스키마 불일치로 빈 결과 반환.
-        카테고리 필터와 페이지네이션을 포함한 올바른 쿼리로 교체.
-        실패 시 REST API fallback 추가.
+        [수정 원인] GraphQL 스키마 불일치.
+                   - 기존 쿼리 { activities { nodes { id title ... } } } 는
+                     실제 스키마와 달라 errors 또는 빈 nodes 반환.
+                   - 해커톤 필터 없이 전체 조회 시 해당 카테고리 항목이 포함 안 됨.
+        [해결]  여러 GraphQL 쿼리 패턴을 순차 시도 (errors 있으면 다음으로).
+                전체 조회 후 클라이언트 필터링으로 최후 fallback.
+                모두 실패 시 REST /v1/activities 시도.
         """
         results = []
+        today = datetime.now().strftime('%Y-%m-%d')
 
-        # 1차 시도: GraphQL (수정된 쿼리)
-        try:
-            query = """
-            query GetActivities($filter: ActivityFilterInput, $page: Int, $size: Int) {
-              activities(filter: $filter, page: $page, size: $size) {
-                list {
-                  id
-                  title
-                  categories { name }
-                  organization { name }
-                  dueDate
+        gql_headers = {
+            "Content-Type": "application/json",
+            "User-Agent": self.headers["User-Agent"],
+            "Referer": "https://linkareer.com/",
+            "Origin": "https://linkareer.com",
+        }
+
+        # 스키마 불확실성 대비 여러 쿼리 패턴 순차 시도
+        queries = [
+            # 패턴 A: categoryName_contains 필터
+            {"query": """
+                query {
+                  activityList(
+                    filter: { categoryName_contains: "해커톤" }
+                    pagination: { page: 1, pageSize: 20 }
+                  ) {
+                    activities { id title dueDate categories { name } }
+                  }
                 }
-              }
-            }
-            """
-            variables = {
-                "filter": {"categoryNames": ["해커톤", "공모전"]},
-                "page": 1,
-                "size": 20
-            }
-            res = requests.post(
-                "https://api.linkareer.com/graphql",
-                json={"query": query, "variables": variables},
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": self.headers["User-Agent"],
-                    "Referer": "https://linkareer.com/",
-                    "Origin": "https://linkareer.com",
-                },
-                timeout=15
-            )
-            if res.status_code == 200:
-                data = res.json()
-                # 다양한 응답 구조 처리
-                nodes = (
-                    data.get('data', {}).get('activities', {}).get('list')
-                    or data.get('data', {}).get('activities', {}).get('nodes', [])
+            """},
+            # 패턴 B: relay-style + type 필터
+            {"query": """
+                query {
+                  activities(first: 20, filter: { type: HACKATHON }) {
+                    nodes { id title dueDate }
+                  }
+                }
+            """},
+            # 패턴 C: keyword 파라미터
+            {"query": """
+                query {
+                  activities(first: 20, keyword: "해커톤") {
+                    nodes { id title dueDate }
+                  }
+                }
+            """},
+            # 패턴 D: 전체 조회 후 클라이언트 필터 (최후 수단)
+            {"query": """
+                {
+                  activities(first: 50) {
+                    nodes { id title dueDate categories { name } }
+                  }
+                }
+            """},
+        ]
+
+        for payload in queries:
+            try:
+                res = requests.post(
+                    "https://api.linkareer.com/graphql",
+                    json=payload,
+                    headers=gql_headers,
+                    timeout=15
                 )
-                if nodes:
-                    today = datetime.now().strftime('%Y-%m-%d')
-                    for node in nodes:
-                        title = node.get('title', '')
-                        cats = ' '.join(c.get('name', '') for c in (node.get('categories') or []))
-                        if any(k in title + cats for k in ['해커톤', 'Hackathon', 'hackathon', '공모전']):
-                            nid = node.get('id', '')
-                            due = (node.get('dueDate') or '')[:10]
-                            if due and due < today:
-                                continue
-                            results.append({
-                                "title": f"🇰🇷 [링커리어] {title}",
-                                "url": f"https://linkareer.com/activity/{nid}",
-                                "host": "Linkareer",
-                                "date": due or "상세 확인"
-                            })
-                    if results:
-                        return results
-        except Exception as e:
-            print(f"  Linkareer GraphQL 예외: {e}")
+                if res.status_code != 200:
+                    continue
 
-        # 2차 시도: 기본 GraphQL 쿼리 (이전 방식 호환)
-        try:
-            query_basic = """
-            {
-              activities(first: 30, filter: { categoryName_in: ["해커톤"] }) {
-                nodes {
-                  id
-                  title
-                  categories { name }
-                  dueDate
-                }
-              }
-            }
-            """
-            res = requests.post(
-                "https://api.linkareer.com/graphql",
-                json={"query": query_basic},
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": self.headers["User-Agent"],
-                    "Referer": "https://linkareer.com/",
-                },
-                timeout=15
-            )
-            if res.status_code == 200:
-                today = datetime.now().strftime('%Y-%m-%d')
-                nodes = res.json().get('data', {}).get('activities', {}).get('nodes', [])
+                body = res.json()
+                if body.get('errors'):
+                    continue  # 스키마 불일치 → 다음 패턴
+
+                data = body.get('data', {})
+                nodes = []
+                for key in data:
+                    val = data[key]
+                    if isinstance(val, dict):
+                        nodes = val.get('nodes', val.get('activities', []))
+                    elif isinstance(val, list):
+                        nodes = val
+                    if nodes:
+                        break
+
+                if not nodes:
+                    continue
+
                 for node in nodes:
                     title = node.get('title', '')
+                    cats  = ' '.join(c.get('name', '') for c in (node.get('categories') or []))
+                    if not any(k in title + cats for k in ['해커톤', 'Hackathon', 'hackathon', '공모전']):
+                        continue
                     nid = node.get('id', '')
                     due = (node.get('dueDate') or '')[:10]
                     if due and due < today:
@@ -683,40 +721,45 @@ class HackathonBot:
                         "host": "Linkareer",
                         "date": due or "상세 확인"
                     })
-        except Exception as e:
-            print(f"  Linkareer GraphQL 기본 쿼리 예외: {e}")
 
-        # 3차 시도: REST API fallback
-        if not results:
-            try:
+                if results:
+                    return results
+
+            except Exception as e:
+                print(f"  Linkareer GraphQL 패턴 예외: {e}")
+
+        # 2차: REST API
+        try:
+            for endpoint in [
+                "https://api.linkareer.com/v1/activities",
+                "https://linkareer.com/api/v1/activities",
+            ]:
                 res = requests.get(
-                    "https://api.linkareer.com/v1/activities",
+                    endpoint,
                     params={"category": "해커톤", "status": "open", "limit": 20},
-                    headers={
-                        "Accept": "application/json",
-                        "User-Agent": self.headers["User-Agent"],
-                        "Referer": "https://linkareer.com/",
-                    },
+                    headers={"Accept": "application/json", "User-Agent": self.headers["User-Agent"]},
                     timeout=15
                 )
                 if res.status_code == 200:
-                    today = datetime.now().strftime('%Y-%m-%d')
                     data = res.json()
                     items = data if isinstance(data, list) else data.get('activities', data.get('list', []))
-                    for item in items:
+                    for item in (items if isinstance(items, list) else []):
                         title = item.get('title', '')
-                        nid = item.get('id', '')
-                        due = (item.get('dueDate') or item.get('due_date') or '')[:10]
+                        nid   = item.get('id', '')
+                        due   = (item.get('dueDate') or item.get('due_date') or '')[:10]
                         if due and due < today:
                             continue
-                        results.append({
-                            "title": f"🇰🇷 [링커리어] {title}",
-                            "url": f"https://linkareer.com/activity/{nid}",
-                            "host": "Linkareer",
-                            "date": due or "상세 확인"
-                        })
-            except Exception as e:
-                print(f"  Linkareer REST fallback 예외: {e}")
+                        if title:
+                            results.append({
+                                "title": f"🇰🇷 [링커리어] {title}",
+                                "url": f"https://linkareer.com/activity/{nid}",
+                                "host": "Linkareer",
+                                "date": due or "상세 확인"
+                            })
+                    if results:
+                        return results
+        except Exception as e:
+            print(f"  Linkareer REST 예외: {e}")
 
         return results
 
