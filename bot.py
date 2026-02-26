@@ -175,16 +175,6 @@ class HackathonBot:
             print(f"DoraHacks 크롤링 예외: {e}")
         return []
 
-    def fetch_unstop(self):
-        try:
-            url = "https://unstop.com/api/public/opportunity/search-result?opportunity=hackathons&per_page=15"
-            res = requests.get(url, headers=self.headers, timeout=15)
-            if res.status_code == 200:
-                items = res.json().get('data', {}).get('data', [])
-                return [{"title": h.get('title'), "url": f"https://unstop.com/p/{h.get('public_url')}", "host": "Unstop", "date": h.get('reg_end_date', 'N/A').split('T')[0]} for h in items if h.get('public_url')]
-            return []
-        except: return []
-
     def fetch_kaggle(self):
         """Kaggle 공식 API (KAGGLE_USERNAME + KAGGLE_KEY 환경변수 필요)"""
         username = os.environ.get('KAGGLE_USERNAME')
@@ -506,7 +496,6 @@ class HackathonBot:
             ("Devpost", self.fetch_devpost),
             ("MLH", self.fetch_mlh),
             ("Devfolio", self.fetch_devfolio),
-            ("Unstop", self.fetch_unstop),
             ("Kaggle", self.fetch_kaggle),
             ("Hack2Skill", self.fetch_hack2skill),
             ("DoraHacks", self.fetch_dorahacks),
