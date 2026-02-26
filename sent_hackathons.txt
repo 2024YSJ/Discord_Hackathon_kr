@@ -281,3 +281,23 @@ GDG BoB: Battle of Brains
 Software Hackathon
 🇰🇷 [캠퍼스픽] 2026 티슈 해커톤형 팀업 공모전
 Hack with YO: Designing Smart DeFi Savings
+LLM Classification Finetuning
+I’m Something of a Painter Myself
+Contradictory, My Dear Watson
+Store Sales - Time Series Forecasting
+Petals to the Metal - Flower Classification on TPU
+Housing Prices Competition for Kaggle Learn Users
+Spaceship Titanic
+Natural Language Processing with Disaster Tweets
+Connect X
+House Prices - Advanced Regression Techniques
+Titanic - Machine Learning from Disaster
+Digit Recognizer
+Hull Tactical - Market Prediction
+CAFA 6 Protein Function Prediction
+Recod.ai/LUC - Scientific Image Forgery Detection
+AI Mathematical Olympiad - Progress Prize 3
+Stanford RNA 3D Folding Part 2
+Deep Past Challenge - Translate Akkadian to English
+March Machine Learning Mania 2026
+Predicting Heart Disease
