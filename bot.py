@@ -176,11 +176,13 @@ class HackathonBot:
         return []
 
     def fetch_kaggle(self):
-        """Kaggle 공식 API (KAGGLE_USERNAME + KAGGLE_KEY 환경변수 필요)"""
         username = os.environ.get('KAGGLE_USERNAME')
         key = os.environ.get('KAGGLE_KEY')
+        
         if not username or not key:
+            print("❌ 오류: Kaggle 환경변수가 설정되지 않았습니다.")
             return []
+    
         try:
             today = datetime.now().strftime('%Y-%m-%d')
             res = requests.get(
@@ -189,24 +191,37 @@ class HackathonBot:
                 auth=(username, key),
                 headers=self.headers, timeout=15
             )
-            if res.status_code == 200:
-                results = []
-                for c in res.json():
-                    title = c.get('title', '')
-                    deadline = (c.get('deadline') or '')[:10]
-                    if not title or (deadline and deadline < today):
-                        continue
-                    ref = c.get('ref') or c.get('id', '')
-                    results.append({
-                        "title": title,
-                        "url": f"https://www.kaggle.com/competitions/{ref}",
-                        "host": "Kaggle",
-                        "date": deadline or "상세 확인"
-                    })
-                return results
+    
+            if res.status_code != 200:
+                print(f"❌ API 요청 실패 (Status: {res.status_code}): {res.text}")
+                return []
+    
+            data = res.json()
+            results = []
+            for c in data:
+                title = c.get('title', '')
+                deadline = (c.get('deadline') or '')[:10]
+                
+                # 필터링 로그 확인용 (필요시 주석 해제)
+                # print(f"Checking: {title} | Deadline: {deadline}")
+    
+                if not title or (deadline and deadline < today):
+                    continue
+                    
+                ref = c.get('ref') or c.get('id', '')
+                results.append({
+                    "title": title,
+                    "url": f"https://www.kaggle.com/competitions/{ref}",
+                    "host": "Kaggle",
+                    "date": deadline or "상세 확인"
+                })
+            
+            print(f"✅ {len(results)}개의 활성 경진대회를 찾았습니다.")
+            return results
+    
         except Exception as e:
-            print(f"Kaggle 크롤링 예외: {e}")
-        return []
+            print(f"❌ Kaggle 크롤링 중 예외 발생: {e}")
+            return []
 
     def fetch_hack2skill(self):
         """Hack2Skill 홈페이지 flagship 이벤트 파싱 (서버사이드 렌더링)"""
