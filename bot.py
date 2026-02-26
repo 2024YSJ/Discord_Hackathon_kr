@@ -321,52 +321,85 @@ class HackathonBot:
         return []
 
     def fetch_wevity(self):
-        """위비티: 403 방지를 위해 헤더 강화 및 Referer 추가"""
+        """위비티: 기획/아이디어(20) 및 IT/소프트웨어(21) 카테고리 수집"""
+        # 수집할 카테고리 ID 목록 (20: 기획/아이디어, 21: 웹/모바일/IT/SW)
+        category_ids = ['20', '21']
+        results = []
+        
         try:
-            url = 'https://www.wevity.com/?c=find&s=1&sp=contents&sw=%ED%95%B4%EC%BB%A4%ED%86%A4'
-            headers = self.headers.copy()
-            headers.update({
+            session = requests.Session()
+            # 1. 403 방지를 위한 세션 강화 헤더
+            session.headers.update(self.headers)
+            session.headers.update({
                 'Referer': 'https://www.wevity.com/',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Connection': 'keep-alive'
             })
-            
-            # 세션을 유지하며 요청
-            session = requests.Session()
-            res = session.get(url, headers=headers, timeout=15)
-            
-            if res.status_code != 200:
-                print(f"  Wevity 실패: HTTP {res.status_code}")
-                return []
 
-            soup = BeautifulSoup(res.text, 'html.parser')
-            # 기존 로직 유지...
-            ul = soup.find('ul', class_='list')
-            if not ul: return []
-            
-            results = []
-            for li in ul.find_all('li'):
-                if 'top' in li.get('class', []): continue
-                tit_div = li.find('div', class_='tit')
-                if not tit_div: continue
+            # 메인 페이지를 먼저 방문하여 기본 쿠키 생성
+            session.get('https://www.wevity.com/', timeout=10)
+
+            for cidx in category_ids:
+                url = f'https://www.wevity.com/?c=find&s=1&gub=1&cidx={cidx}'
+                res = session.get(url, timeout=15)
                 
-                a = tit_div.find('a')
-                title = a.get_text(strip=True)
-                # '마감' 여부 체크 강화
-                dday = li.find('span', class_='dday')
-                if dday and '마감' in dday.get_text() and '임박' not in dday.get_text():
+                if res.status_code != 200:
+                    print(f"  Wevity 카테고리 {cidx} 접근 실패 (HTTP {res.status_code})")
                     continue
-                
-                results.append({
-                    "title": f"🇰🇷 [위비티] {title}",
-                    "url": "https://www.wevity.com/" + a['href'],
-                    "host": "Wevity",
-                    "date": li.find('div', class_='day').get_text(strip=True) if li.find('div', class_='day') else "상세확인"
-                })
-            return results
-        except Exception as e:
-            print(f"Wevity 예외: {e}")
-            return []
 
+                soup = BeautifulSoup(res.text, 'html.parser')
+                ul = soup.find('ul', class_='list')
+                if not ul:
+                    continue
+
+                items = ul.find_all('li')
+                for li in items:
+                    # 'top' 클래스(공지성 상단 고정) 제외
+                    if 'top' in li.get('class', []):
+                        continue
+
+                    # 마감된 항목 제외
+                    dday_span = li.find('span', class_='dday')
+                    if dday_span:
+                        dday_text = dday_span.get_text(strip=True)
+                        if dday_text == '마감' or '진행예정' in dday_text:
+                            continue
+
+                    tit_div = li.find('div', class_='tit')
+                    if not tit_div:
+                        continue
+
+                    a = tit_div.find('a', href=True)
+                    if not a:
+                        continue
+
+                    title = a.get_text(strip=True)
+                    href = a['href']
+                    full_url = "https://www.wevity.com/" + href if href.startswith('?') else href
+
+                    # 날짜 정보 추출
+                    day_div = li.find('div', class_='day')
+                    date_str = day_div.get_text(separator=' ', strip=True) if day_div else "상세 확인"
+
+                    # 카테고리 이름 식별 (사용자 확인용)
+                    cat_name = "아이디어" if cidx == '20' else "IT/SW"
+
+                    results.append({
+                        "title": f"🇰🇷 [위비티-{cat_name}] {title}",
+                        "url": full_url,
+                        "host": "Wevity",
+                        "date": date_str
+                    })
+                
+                # 연속 요청 시 차단 방지를 위한 미세한 지연
+                time.sleep(1)
+
+            return results
+
+        except Exception as e:
+            print(f"Wevity 크롤링 중 예외 발생: {e}")
+            return []
     def fetch_campuspick(self):
         """캠퍼스픽 내부 API (api2.campuspick.com/find/activity/list POST)"""
         try:
