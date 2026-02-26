@@ -101,48 +101,38 @@ class HackathonBot:
         return []
 
     def fetch_devfolio(self):
-        """devfolio.co/hackathons의 __NEXT_DATA__ 에서 open/upcoming/featured 해커톤 추출"""
+        """Devfolio: 데이터 구조 변경 대응 (index 검색 방식)"""
         try:
-            dev_headers = self.headers.copy()
-            dev_headers.update({
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-            })
-            res = requests.get("https://devfolio.co/hackathons", headers=dev_headers, timeout=15)
-            if res.status_code != 200:
-                return []
+            res = requests.get("https://devfolio.co/hackathons", headers=self.headers, timeout=15)
             soup = BeautifulSoup(res.text, 'html.parser')
             script = soup.find('script', id='__NEXT_DATA__')
-            if not script:
-                return []
+            if not script: return []
+            
             page_data = json.loads(script.string)
+            # queries 배열을 순회하며 데이터가 들어있는 지점을 동적으로 탐색
             queries = page_data['props']['pageProps']['dehydratedState']['queries']
-            if not queries:
-                return []
-            qdata = queries[0]['state']['data']
-            today = datetime.now().strftime('%Y-%m-%d')
-            seen = set()
+            qdata = {}
+            for q in queries:
+                if 'open_hackathons' in q.get('state', {}).get('data', {}):
+                    qdata = q['state']['data']
+                    break
+            
+            if not qdata: return []
+            
             results = []
-            for section in ('open_hackathons', 'upcoming_hackathons', 'featured_hackathons'):
+            today = datetime.now().strftime('%Y-%m-%d')
+            for section in ('open_hackathons', 'upcoming_hackathons'):
                 for h in qdata.get(section, []):
-                    slug = h.get('slug', '')
-                    name = h.get('name', '')
-                    if not slug or not name or slug in seen:
-                        continue
-                    seen.add(slug)
                     ends_at = (h.get('ends_at') or '')[:10]
-                    if ends_at and ends_at < today:
-                        continue
+                    if ends_at and ends_at < today: continue
                     results.append({
-                        "title": name,
-                        "url": f"https://{slug}.devfolio.co",
+                        "title": h.get('name'),
+                        "url": f"https://{h.get('slug')}.devfolio.co",
                         "host": "Devfolio",
                         "date": ends_at or "상세 확인"
                     })
             return results
-        except Exception as e:
-            print(f"Devfolio 크롤링 예외: {e}")
-            return []
+        except: return []
 
     def fetch_dorahacks(self):
         """DoraHacks REST API - 진행 중인 해커톤 목록"""
@@ -331,61 +321,51 @@ class HackathonBot:
         return []
 
     def fetch_wevity(self):
-        """위비티 해커톤 공모전 목록 파싱 (세션 쿠키로 403 우회)"""
+        """위비티: 403 방지를 위해 헤더 강화 및 Referer 추가"""
         try:
-            session = requests.Session()
-            session.headers.update(self.headers)
-            session.headers.update({
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+            url = 'https://www.wevity.com/?c=find&s=1&sp=contents&sw=%ED%95%B4%EC%BB%A4%ED%86%A4'
+            headers = self.headers.copy()
+            headers.update({
+                'Referer': 'https://www.wevity.com/',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             })
-            # 메인 페이지 먼저 방문해 PHPSESSID 쿠키 획득
-            session.get('https://www.wevity.com/', timeout=10)
-            res = session.get(
-                'https://www.wevity.com/',
-                params={'c': 'find', 's': '1', 'sp': 'contents', 'sw': '해커톤'},
-                timeout=15
-            )
-            print(f"  Wevity HTTP {res.status_code}, {len(res.text)} bytes")
-            if res.status_code == 200:
-                soup = BeautifulSoup(res.text, 'html.parser')
-                ul = soup.find('ul', class_='list')
-                if not ul:
-                    print("  Wevity: ul.list 요소를 찾지 못함")
-                    return []
-                results = []
-                li_all = ul.find_all('li')
-                print(f"  Wevity: {len(li_all)}개 li 발견")
-                for li in li_all:
-                    if 'top' in li.get('class', []):
-                        continue
-                    # dday span 텍스트로 마감 여부 확인 ('마감임박'은 포함)
-                    dday_span = li.find('span', class_='dday')
-                    if dday_span and dday_span.get_text(strip=True) == '마감':
-                        continue
-                    tit_div = li.find('div', class_='tit')
-                    if not tit_div:
-                        continue
-                    a = tit_div.find('a', href=True)
-                    if not a:
-                        continue
-                    title = a.get_text(strip=True)
-                    if not title:
-                        continue
-                    href = a['href']
-                    full_url = "https://www.wevity.com/" + href if href.startswith('?') else href
-                    day_div = li.find('div', class_='day')
-                    date_str = day_div.get_text(separator=' ', strip=True) if day_div else "상세 확인"
-                    results.append({
-                        "title": f"🇰🇷 [위비티] {title}",
-                        "url": full_url,
-                        "host": "Wevity",
-                        "date": date_str
-                    })
-                return results
+            
+            # 세션을 유지하며 요청
+            session = requests.Session()
+            res = session.get(url, headers=headers, timeout=15)
+            
+            if res.status_code != 200:
+                print(f"  Wevity 실패: HTTP {res.status_code}")
+                return []
+
+            soup = BeautifulSoup(res.text, 'html.parser')
+            # 기존 로직 유지...
+            ul = soup.find('ul', class_='list')
+            if not ul: return []
+            
+            results = []
+            for li in ul.find_all('li'):
+                if 'top' in li.get('class', []): continue
+                tit_div = li.find('div', class_='tit')
+                if not tit_div: continue
+                
+                a = tit_div.find('a')
+                title = a.get_text(strip=True)
+                # '마감' 여부 체크 강화
+                dday = li.find('span', class_='dday')
+                if dday and '마감' in dday.get_text() and '임박' not in dday.get_text():
+                    continue
+                
+                results.append({
+                    "title": f"🇰🇷 [위비티] {title}",
+                    "url": "https://www.wevity.com/" + a['href'],
+                    "host": "Wevity",
+                    "date": li.find('div', class_='day').get_text(strip=True) if li.find('div', class_='day') else "상세확인"
+                })
+            return results
         except Exception as e:
-            print(f"Wevity 크롤링 예외: {e}")
-        return []
+            print(f"Wevity 예외: {e}")
+            return []
 
     def fetch_campuspick(self):
         """캠퍼스픽 내부 API (api2.campuspick.com/find/activity/list POST)"""
