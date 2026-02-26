@@ -321,31 +321,29 @@ class HackathonBot:
         return []
 
     def fetch_wevity(self):
-        """위비티: 기획/아이디어(20) 및 IT/소프트웨어(21) 카테고리 수집"""
-        # 수집할 카테고리 ID 목록 (20: 기획/아이디어, 21: 웹/모바일/IT/SW)
+        """위비티: 기획/아이디어(20) 및 IT/소프트웨어(21) 카테고리 집중 수집"""
         category_ids = ['20', '21']
         results = []
         
         try:
+            # 1. 세션 생성 및 브라우저처럼 보이기 위한 헤더 설정
             session = requests.Session()
-            # 1. 403 방지를 위한 세션 강화 헤더
             session.headers.update(self.headers)
             session.headers.update({
                 'Referer': 'https://www.wevity.com/',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Connection': 'keep-alive'
             })
 
-            # 메인 페이지를 먼저 방문하여 기본 쿠키 생성
+            # 메인 페이지를 먼저 들러서 쿠키를 굽습니다.
             session.get('https://www.wevity.com/', timeout=10)
 
             for cidx in category_ids:
+                # 사용자가 요청한 특정 카테고리 URL
                 url = f'https://www.wevity.com/?c=find&s=1&gub=1&cidx={cidx}'
                 res = session.get(url, timeout=15)
                 
                 if res.status_code != 200:
-                    print(f"  Wevity 카테고리 {cidx} 접근 실패 (HTTP {res.status_code})")
+                    print(f"  Wevity 카테고리 {cidx} 접근 실패: {res.status_code}")
                     continue
 
                 soup = BeautifulSoup(res.text, 'html.parser')
@@ -353,52 +351,42 @@ class HackathonBot:
                 if not ul:
                     continue
 
-                items = ul.find_all('li')
-                for li in items:
-                    # 'top' 클래스(공지성 상단 고정) 제외
+                for li in ul.find_all('li'):
+                    # 상단 고정 광고/공지 제외
                     if 'top' in li.get('class', []):
                         continue
 
-                    # 마감된 항목 제외
+                    # 마감 여부 확인 ('마감' 텍스트가 정확히 일치할 때만 제외)
                     dday_span = li.find('span', class_='dday')
                     if dday_span:
-                        dday_text = dday_span.get_text(strip=True)
-                        if dday_text == '마감' or '진행예정' in dday_text:
+                        status = dday_span.get_text(strip=True)
+                        if status == '마감':
                             continue
 
                     tit_div = li.find('div', class_='tit')
-                    if not tit_div:
-                        continue
-
+                    if not tit_div: continue
+                    
                     a = tit_div.find('a', href=True)
-                    if not a:
-                        continue
-
                     title = a.get_text(strip=True)
                     href = a['href']
                     full_url = "https://www.wevity.com/" + href if href.startswith('?') else href
-
-                    # 날짜 정보 추출
-                    day_div = li.find('div', class_='day')
-                    date_str = day_div.get_text(separator=' ', strip=True) if day_div else "상세 확인"
-
-                    # 카테고리 이름 식별 (사용자 확인용)
-                    cat_name = "아이디어" if cidx == '20' else "IT/SW"
-
+                    
+                    # 어느 카테고리인지 머리말 추가
+                    cat_label = "기획" if cidx == '20' else "IT/SW"
+                    
                     results.append({
-                        "title": f"🇰🇷 [위비티-{cat_name}] {title}",
+                        "title": f"🇰🇷 [위비티-{cat_label}] {title}",
                         "url": full_url,
                         "host": "Wevity",
-                        "date": date_str
+                        "date": li.find('div', class_='day').get_text(strip=True) if li.find('div', class_='day') else "상세 확인"
                     })
                 
-                # 연속 요청 시 차단 방지를 위한 미세한 지연
-                time.sleep(1)
+                # 봇 탐지 방지를 위한 짧은 휴식
+                time.sleep(1.5)
 
             return results
-
         except Exception as e:
-            print(f"Wevity 크롤링 중 예외 발생: {e}")
+            print(f"Wevity 크롤링 예외: {e}")
             return []
     def fetch_campuspick(self):
         """캠퍼스픽 내부 API (api2.campuspick.com/find/activity/list POST)"""
