@@ -73,69 +73,93 @@ class HackathonBot:
         return []
 
     def fetch_linkareer(self):
+        """
+        최초 제시된 인트로스펙션 + 리스트 호출 로직을 기반으로
+        부트캠프 키워드 필터링 기능을 추가하여 확장한 버전입니다.
+        """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
         seen_ids = set()
+
         gql_headers = {
             "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Origin": "https://linkareer.com",
+            "User-Agent": self.headers["User-Agent"],
             "Referer": "https://linkareer.com/",
+            "Origin": "https://linkareer.com",
+            "Accept": "application/json",
         }
 
-        for keyword in ["부트캠프", "해커톤"]:
-            # f-string 내 중괄호는 {{ }}로 표현해야 합니다.
-            raw_query = """
-            query {{
-              unifiedSearch(keyword: "{keyword}", page: 1, filter: {{type: ACTIVITY}}) {{
-                activities {{
-                  nodes {{
-                    id
-                    title
-                    dueDate
-                    hostName
-                    categories {{
-                      name
-                    }}
-                  }
-                }
-              }
-            }}"""
-            payload = {"query": raw_query}
+        # Step 1: 최초 코드의 핵심 - 인트로스펙션으로 실제 Query 필드 파악
+        actual_fields = []
+        try:
+            res = requests.post(
+                "https://api.linkareer.com/graphql",
+                json={"query": "{ __schema { queryType { fields { name } } } }"},
+                headers=gql_headers, timeout=10
+            )
+            if res.status_code == 200:
+                body = res.json()
+                if not body.get('errors'):
+                    actual_fields = [f['name'] for f in body.get('data',{}).get('__schema',{}).get('queryType',{}).get('fields',[])]
+        except Exception as e:
+            print(f"  Linkareer 인트로스펙션 예외: {e}")
+
+        # Step 2: 동작이 검증된 리스트형 쿼리들 구성
+        queries = []
+        if 'activities' in actual_fields:
+            queries.append({"query": '{ activities(first: 50) { nodes { id title dueDate hostName categories { name } } } }'})
+        if 'activityList' in actual_fields:
+            queries.append({"query": '{ activityList(page: 1, pageSize: 50) { list { id title dueDate hostName categories { name } } } }'})
+
+        # 만약 인트로스펙션이 실패하더라도 시도할 범용 패턴
+        if not queries:
+            queries.append({"query": '{ activities(first: 50) { nodes { id title dueDate hostName categories { name } } } }'})
+
+        # 필터링 키워드 (해커톤 + 부트캠프 통합)
+        target_keywords = ['해커톤', 'hackathon', '공모전', '부트캠프', 'bootcamp', 'kdt', '교육', '양성', '과정']
+
+        for payload in queries:
             try:
                 time.sleep(1.0)
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
-                if res.status_code == 200:
-                    body = res.json()
-                    data = body.get('data', {}) or {}
-                    search_res = data.get('unifiedSearch', {}) or {}
-                    activities = search_res.get('activities', {}) or {}
-                    nodes = activities.get('nodes', [])
+                if res.status_code != 200: continue
+                
+                body = res.json()
+                if body.get('errors'): continue
 
-                    if not nodes:
-                        nodes = self._extract_nodes(data)
+                # 최초 코드에서 사용한 재귀 탐색 함수 활용
+                nodes = self._extract_nodes(body.get('data', {}))
+                if not nodes: continue
 
-                    for node in nodes:
-                        nid = node.get('id')
-                        if not nid or nid in seen_ids: continue
-                        title = node.get('title', '')
+                for node in nodes:
+                    nid = node.get('id')
+                    if not nid or nid in seen_ids: continue
+                    
+                    title = node.get('title', '')
+                    # 카테고리 태그 이름 추출
+                    cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
+                    full_text = (title + " " + cats).lower()
+
+                    # 확장 기능: 해커톤과 부트캠프 키워드 모두 검사
+                    if any(k in full_text for k in target_keywords):
                         due = (node.get('dueDate') or '')[:10]
                         if due and due < today: continue
+
                         seen_ids.add(nid)
                         
-                        cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
-                        full_text = (title + " " + cats).lower()
+                        # 아이콘 분기 로직
                         is_boot = any(k in full_text for k in ['부트캠프', 'bootcamp', 'kdt', '교육', '양성', '과정'])
                         icon = "🎓 [부트캠프]" if is_boot else "🇰🇷 [링커리어]"
                         
                         results.append({
                             "title": f"{icon} {title}",
                             "url": f"https://linkareer.com/activity/{nid}",
-                            "host": "Linkareer",
+                            "host": node.get('hostName') or "Linkareer",
                             "date": due or "상세 확인"
                         })
             except Exception as e:
-                print(f"  Linkareer {keyword} 수집 중 예외: {e}")
+                print(f"  Linkareer 데이터 추출 중 예외: {e}")
+
         return results
 
     def fetch_campuspick(self):
