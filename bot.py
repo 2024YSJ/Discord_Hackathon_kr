@@ -111,6 +111,7 @@ class HackathonBot:
             """
             
             payload = {{"query": raw_query}}
+            """
 
             try:
                 time.sleep(1.0)
