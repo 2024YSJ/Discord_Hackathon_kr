@@ -396,95 +396,80 @@ class HackathonBot:
 
     def fetch_linkareer(self):
         """
-        링커리어 GraphQL 기반 해커톤 및 부트캠프 수집 함수
+        링커리어 수집 로직 개선: 
+        필터링 의존도를 낮추고 키워드 매칭 기반으로 부트캠프를 식별합니다.
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
+        seen_ids = set()
 
         gql_headers = {
             "Content-Type": "application/json",
             "User-Agent": self.headers["User-Agent"],
-            "Referer": "https://linkareer.com/",
+            "Referer": "https://linkareer.com/list/bootcamp",
             "Origin": "https://linkareer.com",
             "Accept": "application/json",
         }
 
-        # Step 1: 인트로스펙션으로 실제 Query 필드 파악 (기존 로직 유지)
-        actual_fields = []
-        try:
-            res = requests.post(
-                "https://api.linkareer.com/graphql",
-                json={"query": "{ __schema { queryType { fields { name } } } }"},
-                headers=gql_headers, timeout=10
-            )
-            if res.status_code == 200:
-                body = res.json()
-                if not body.get('errors'):
-                    actual_fields = [f['name'] for f in body.get('data',{}).get('__schema',{}).get('queryType',{}).get('fields',[])]
-        except Exception as e:
-            print(f"  Linkareer 인트로스펙션 예외: {e}")
+        # 필터링에 실패할 경우를 대비해 '전체 최신순'과 '카테고리' 쿼리 병행
+        # activityList 필드가 실제 서버 스키마에 따라 동작하지 않을 수 있으므로 여러 패턴 시도
+        queries = [
+            # 1. 부트캠프 카테고리 명시 시도 (가장 정확하지만 필터명 틀리면 0건)
+            {"query": '{ activityList(filter: {categoryName: "부트캠프"}, page: 1, pageSize: 30) { list { id title dueDate hostName categories { name } } } }'},
+            # 2. 전체 활동 중 최신 50개 (필터 오류 방지용 보험)
+            {"query": '{ activities(first: 50) { nodes { id title dueDate hostName categories { name } } } }'}
+        ]
 
-        # Step 2: 해커톤과 부트캠프를 모두 잡기 위한 쿼리 생성
-        queries = []
-        
-        # 1. 부트캠프/해커톤 카테고리 필터링 쿼리 (필드 존재 시)
-        if 'activityList' in actual_fields:
-            # 부트캠프 필터 추가
-            queries.append({"query": '{ activityList(filter: {categoryName: "부트캠프"}, page: 1, pageSize: 20) { list { id title dueDate categories { name } } } }'})
-            # 해커톤 필터 추가
-            queries.append({"query": '{ activityList(filter: {categoryName: "해커톤"}, page: 1, pageSize: 20) { list { id title dueDate categories { name } } } }'})
-        
-        # 2. 범용 쿼리 (필터링 없이 최신 데이터 수집 후 키워드 필터링)
-        queries.append({"query": '{ activities(first: 50) { nodes { id title dueDate categories { name } } } }'})
-
-        # 수집 및 필터링 키워드 정의
-        target_keywords = ['해커톤', 'hackathon', '공모전', '부트캠프', 'bootcamp', 'kdt', '교육', '양성']
-        seen_ids = set()
+        # 부트캠프 판별을 위한 핵심 키워드
+        bootcamp_keywords = ['부트캠프', 'bootcamp', 'kdt', '국비', '양성', '교육과정', 'scampus', 'academy']
+        # 해커톤/공모전 키워드
+        contest_keywords = ['해커톤', 'hackathon', '공모전', '대회', '챌린지']
 
         for payload in queries:
             try:
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
                 if res.status_code != 200: continue
                 
-                body = res.json()
-                if body.get('errors'): continue
-
-                nodes = self._extract_nodes(body.get('data', {}))
+                data = res.json().get('data', {})
+                nodes = self._extract_nodes(data)
                 if not nodes: continue
 
                 for node in nodes:
-                    nid = node.get('id', '')
+                    nid = node.get('id')
                     if not nid or nid in seen_ids: continue
                     
                     title = node.get('title', '')
-                    # 카테고리 이름들 추출
-                    cats_list = [c.get('name', '') for c in (node.get('categories') or [])]
-                    cats_str = ' '.join(cats_list).lower()
-                    full_text = (title + cats_str).lower()
+                    # 카테고리 이름들 (List 형태 대응)
+                    cats = node.get('categories') or []
+                    cats_str = ' '.join([c.get('name', '') for c in cats]).lower()
+                    
+                    # 제목 + 카테고리 전체 텍스트 분석
+                    full_info = (title + " " + cats_str).lower()
+                    
+                    # 1. 마감일 체크
+                    due = (node.get('dueDate') or '')[:10]
+                    if due and due < today: continue
 
-                    # 키워드 검사: 타겟 키워드가 포함되어 있는지 확인
-                    if any(k in full_text for k in target_keywords):
-                        due = (node.get('dueDate') or '')[:10]
-                        # 마감일 지난 공고 제외
-                        if due and due < today: continue
-                        
+                    # 2. 키워드 매칭 (부트캠프 또는 해커톤 관련 공고만 수집)
+                    is_bootcamp = any(k in full_info for k in bootcamp_keywords)
+                    is_contest = any(k in full_info for k in contest_keywords)
+
+                    if is_bootcamp or is_contest:
                         seen_ids.add(nid)
                         
-                        # 아이콘 및 접두사 결정 (부트캠프 우선)
-                        if any(bk in full_text for bk in ['부트캠프', 'bootcamp', 'kdt', '교육']):
-                            prefix = "🎓 [부트캠프]"
-                        else:
-                            prefix = "🇰🇷 [링커리어]"
-
+                        # 아이콘 결정 (부트캠프 우선순위)
+                        icon = "🎓 [부트캠프]" if is_bootcamp else "🇰🇷 [링커리어]"
+                        
                         results.append({
-                            "title": f"{prefix} {title}",
+                            "title": f"{icon} {title}",
                             "url": f"https://linkareer.com/activity/{nid}",
-                            "host": "Linkareer",
+                            "host": node.get('hostName') or "Linkareer",
                             "date": due or "상세 확인"
                         })
             except Exception as e:
-                print(f"  Linkareer GraphQL 수집 중 예외: {e}")
+                print(f"  Linkareer 수집 중 오류: {e}")
 
+        print(f"  Linkareer 최종 추출 결과: {len(results)}개")
         return results
 
     def _extract_nodes(self, data, depth=0):
