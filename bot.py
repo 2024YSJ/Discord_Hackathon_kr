@@ -74,50 +74,69 @@ class HackathonBot:
 
     def fetch_linkareer(self):
         """
-        링커리어 수집 복구 버전:
-        1. 서버가 차단하기 쉬운 '검색(unifiedSearch)' 대신 '리스트(activities)' 쿼리 사용
-        2. 수집된 데이터 내에서 '해커톤'과 '부트캠프' 키워드를 동시에 필터링
-        3. 이전의 안정적인 _extract_nodes 재귀 탐색 활용
+        링커리어 수집 최종 복구:
+        1. unifiedSearch를 사용하되, 필터와 변수를 서버 규격에 완벽히 맞춤
+        2. 부트캠프와 해커톤을 각각 검색하여 병합
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
         seen_ids = set()
 
+        # 헤더 최신화 및 필수 항목 추가
         gql_headers = {
             "Content-Type": "application/json",
-            "User-Agent": self.headers["User-Agent"],
-            "Referer": "https://linkareer.com/list/bootcamp", # Referer를 구체적으로 설정
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Origin": "https://linkareer.com",
-            "Accept": "application/json",
+            "Referer": "https://linkareer.com/search?q=%EB%B6%80%ED%8A%B8%EC%BA%A0%ED%94%84",
+            "Accept": "*/*",
         }
 
-        # 서버가 에러를 뱉지 않는 가장 대중적인(Public) 쿼리 패턴 2가지
-        queries = [
-            # 패턴 A: 최신 활동 전체 노드 (부트캠프, 공모전 섞여 있음)
-            {"query": '{ activities(first: 50) { nodes { id title dueDate hostName categories { name } } } }'},
-            # 패턴 B: 활동 리스트 (보조용)
-            {"query": '{ activityList(page: 1, pageSize: 50) { list { id title dueDate hostName categories { name } } } }'}
-        ]
+        # 실제 서비스에서 사용하는 표준 통합 검색 쿼리
+        search_query = """
+        query GetUnifiedSearch($keyword: String!, $page: Int!, $filter: UnifiedSearchFilter) {
+          unifiedSearch(keyword: $keyword, page: $page, filter: $filter) {
+            activities {
+              nodes {
+                id
+                title
+                dueDate
+                hostName
+                categories {
+                  name
+                }
+              }
+            }
+          }
+        }
+        """
 
-        # 필터링할 키워드 통합 (해커톤 + 부트캠프)
-        target_keywords = ['해커톤', 'hackathon', '공모전', '부트캠프', 'bootcamp', 'kdt', '교육', '양성']
+        for keyword in ["부트캠프", "해커톤"]:
+            # 서버가 요구하는 정확한 Variables 구조
+            payload = {
+                "query": search_query,
+                "variables": {
+                    "keyword": keyword,
+                    "page": 1,
+                    "filter": {"type": "ACTIVITY"}
+                }
+            }
 
-        for payload in queries:
             try:
+                # 0.5초 대기 (서버 부하 방지 및 차단 회피)
+                time.sleep(0.5)
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
                 
-                # 만약 400 에러 등이 나면 다음 패턴으로 이동
                 if res.status_code != 200:
+                    print(f"  Linkareer {keyword} 요청 실패: {res.status_code}")
                     continue
                 
-                body = res.json()
-                if body.get('errors'):
-                    continue
+                data = res.json().get('data', {})
+                # 경로 탐색: unifiedSearch -> activities -> nodes
+                nodes = data.get('unifiedSearch', {}).get('activities', {}).get('nodes', [])
 
-                # 질문자님이 이전에 성공했던 '재귀 탐색' 함수 호출
-                nodes = self._extract_nodes(body.get('data', {}))
+                # 만약 경로가 다를 경우 기존의 재귀 탐색 활용
                 if not nodes:
-                    continue
+                    nodes = self._extract_nodes(data)
 
                 for node in nodes:
                     nid = node.get('id')
@@ -125,35 +144,27 @@ class HackathonBot:
                         continue
                     
                     title = node.get('title', '')
-                    # 카테고리 태그 이름들을 공백으로 합침
-                    cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
+                    due = (node.get('dueDate') or '')[:10]
                     
-                    # 제목과 카테고리 전체에서 키워드 검사
-                    full_text = (title + " " + cats).lower()
+                    if due and due < today:
+                        continue
 
-                    if any(k in full_text for k in target_keywords):
-                        due = (node.get('dueDate') or '')[:10]
-                        
-                        # 마감기한 체크
-                        if due and due < today:
-                            continue
-
-                        seen_ids.add(nid)
-                        
-                        # 부트캠프 성격인지 확인하여 아이콘 분기
-                        is_bootcamp = any(k in full_text for k in ['부트캠프', 'bootcamp', 'kdt', '교육'])
-                        icon = "🎓 [부트캠프]" if is_bootcamp else "🇰🇷 [링커리어]"
-                        
-                        results.append({
-                            "title": f"{icon} {title}",
-                            "url": f"https://linkareer.com/activity/{nid}",
-                            "host": node.get('hostName') or "Linkareer",
-                            "date": due or "상세 확인"
-                        })
+                    seen_ids.add(nid)
+                    
+                    # 카테고리 정보 추출
+                    cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
+                    is_boot = any(k in (title + cats).lower() for k in ['부트캠프', 'bootcamp', 'kdt', '교육'])
+                    icon = "🎓 [부트캠프]" if is_boot : icon = "🎓 [부트캠프]" if is_boot else "🇰🇷 [링커리어]"
+                    
+                    results.append({
+                        "title": f"{icon} {title}",
+                        "url": f"https://linkareer.com/activity/{nid}",
+                        "host": node.get('hostName') or "Linkareer",
+                        "date": due or "상세 확인"
+                    })
             except Exception as e:
-                print(f"  Linkareer 수집 중 예외 발생: {e}")
+                print(f"  Linkareer {keyword} 처리 중 예외: {e}")
 
-        # 모든 쿼리 시도 후 결과 반환
         return results
 
     def fetch_campuspick(self):
