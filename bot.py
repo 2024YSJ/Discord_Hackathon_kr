@@ -1,18 +1,42 @@
 import os
 import requests
-import json
+import re
 from datetime import datetime
 from bs4 import BeautifulSoup
-import time
-import re
 
 WEBHOOK_URL = os.environ.get('DISCORD_WEBHOOK_URL')
 DB_FILE = "sent_hackathons.txt"
+
+LINKAREER_GRAPHQL_URL = "https://api.linkareer.com/graphql"
+
+LINKAREER_QUERY = """
+query FetchActivities($filterBy: ActivityFilter, $page: Int!, $pageSize: Int!) {
+  activities(
+    filterBy: $filterBy
+    pagination: { page: $page, pageSize: $pageSize }
+    orderBy: { field: CREATED_AT, direction: DESC }
+  ) {
+    totalCount
+    nodes {
+      id
+      title
+      organizationName
+      recruitCloseAt
+    }
+  }
+}
+"""
 
 class HackathonBot:
     def __init__(self):
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        self.linkareer_headers = {
+            **self.headers,
+            "Content-Type": "application/json",
+            "Origin": "https://linkareer.com",
+            "Referer": "https://linkareer.com/",
         }
         self.sent_list = self.load_sent_list()
 
@@ -39,7 +63,8 @@ class HackathonBot:
             if res.status_code == 200:
                 return [{"title": h['title'], "url": h['url'], "host": "Devpost", "date": h.get('submission_period_dates', 'N/A')}
                         for h in res.json().get('hackathons', [])]
-        except: pass
+        except:
+            pass
         return []
 
     def fetch_mlh(self):
@@ -72,94 +97,66 @@ class HackathonBot:
             print(f"MLH 예외: {e}")
         return []
 
-    def fetch_linkareer(self):
-        """
-        [확인된 사실]
-        - URL 구조: linkareer.com/activity/{id} 확인됨
-        - linkareer.com 페이지들은 CSR(Next.js)이라 HTML 파싱 불가
-        - api.linkareer.com/graphql: 400 반환 (GET), POST 필요
-        - GraphQL 스키마 불명확
-
-        [전략] GraphQL 인트로스펙션으로 실제 필드명을 먼저 파악 후 올바른 쿼리 사용.
-        인트로스펙션 실패 시 여러 쿼리 패턴 순차 시도.
-        """
+    def _fetch_linkareer(self, filter_by, label):
+        """링커리어 GraphQL API로 활동 목록을 가져옵니다."""
         results = []
-        today = datetime.now().strftime('%Y-%m-%d')
-
-        gql_headers = {
-            "Content-Type": "application/json",
-            "User-Agent": self.headers["User-Agent"],
-            "Referer": "https://linkareer.com/",
-            "Origin": "https://linkareer.com",
-            "Accept": "application/json",
-        }
-
-        # Step 1: 인트로스펙션으로 실제 Query 필드 파악
-        actual_fields = []
+        page = 1
+        page_size = 20
         try:
-            res = requests.post(
-                "https://api.linkareer.com/graphql",
-                json={"query": "{ __schema { queryType { fields { name } } } }"},
-                headers=gql_headers, timeout=10
-            )
-            if res.status_code == 200:
-                body = res.json()
-                if not body.get('errors'):
-                    actual_fields = [f['name'] for f in body.get('data',{}).get('__schema',{}).get('queryType',{}).get('fields',[])]
-                    print(f"  Linkareer GraphQL 필드: {actual_fields[:10]}")
+            while True:
+                payload = {
+                    "query": LINKAREER_QUERY,
+                    "variables": {
+                        "filterBy": filter_by,
+                        "page": page,
+                        "pageSize": page_size,
+                    },
+                }
+                res = requests.post(
+                    LINKAREER_GRAPHQL_URL,
+                    json=payload,
+                    headers=self.linkareer_headers,
+                    timeout=15,
+                )
+                res.raise_for_status()
+                data = res.json()
+                nodes = data["data"]["activities"]["nodes"]
+                total = data["data"]["activities"]["totalCount"]
+
+                for a in nodes:
+                    close_date = "미정"
+                    if a.get("recruitCloseAt"):
+                        close_ts = int(a["recruitCloseAt"]) / 1000
+                        close_date = datetime.fromtimestamp(close_ts).strftime("%Y-%m-%d")
+                    results.append({
+                        "title": a["title"],
+                        "url": f"https://linkareer.com/activity/{a['id']}",
+                        "host": f"링커리어 | {a.get('organizationName', '-')}",
+                        "date": f"마감: {close_date}",
+                    })
+
+                if page * page_size >= total:
+                    break
+                page += 1
+
         except Exception as e:
-            print(f"  Linkareer 인트로스펙션 예외: {e}")
-
-        # Step 2: 인트로스펙션 결과에 맞는 쿼리 또는 여러 패턴 시도
-        # 알려진 패턴: activities, activityList, contest, hackathons 등
-        queries = []
-
-        # 인트로스펙션으로 필드 확인된 경우 맞춤 쿼리 추가
-        if 'activityList' in actual_fields:
-            queries.append({"query": '{ activityList(filter: {categoryName: "해커톤"}, page: 1, pageSize: 20) { list { id title dueDate } } }'})
-        if 'activities' in actual_fields:
-            queries.append({"query": '{ activities(first: 30) { nodes { id title dueDate categories { name } } } }'})
-            queries.append({"query": '{ activities(first: 30, type: "hackathon") { nodes { id title dueDate } } }'})
-
-        # 인트로스펙션 무관 범용 패턴들
-        queries += [
-            {"query": '{ activities(first: 50) { nodes { id title dueDate categories { name } } } }'},
-            {"query": '{ activityList(page: 1, pageSize: 30) { list { id title dueDate categories { name } } } }'},
-            {"query": '{ contests(first: 30, filter: {category: "해커톤"}) { nodes { id title dueDate } } }'},
-        ]
-
-        for payload in queries:
-            try:
-                res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
-                if res.status_code != 200: continue
-                body = res.json()
-                if body.get('errors'):
-                    continue
-
-                # 응답에서 노드 추출 (구조 불명확하므로 재귀 탐색)
-                nodes = self._extract_nodes(body.get('data', {}))
-                if not nodes: continue
-
-                for node in nodes:
-                    title = node.get('title', '')
-                    cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
-                    if not any(k in title+cats for k in ['해커톤','Hackathon','hackathon','공모전']): continue
-                    nid = node.get('id','')
-                    due = (node.get('dueDate') or '')[:10]
-                    if due and due < today: continue
-                    if title:
-                        results.append({
-                            "title": f"🇰🇷 [링커리어] {title}",
-                            "url": f"https://linkareer.com/activity/{nid}",
-                            "host": "Linkareer",
-                            "date": due or "상세 확인"
-                        })
-                if results:
-                    return results
-            except Exception as e:
-                print(f"  Linkareer GraphQL 예외: {e}")
+            print(f"링커리어 {label} 수집 실패: {e}")
 
         return results
+
+    def fetch_linkareer_hackathon(self):
+        """링커리어에서 해커톤 공고를 가져옵니다."""
+        return self._fetch_linkareer(
+            filter_by={"q": "해커톤", "status": "OPEN"},
+            label="해커톤",
+        )
+
+    def fetch_linkareer_bootcamp(self):
+        """링커리어에서 부트캠프 공고를 가져옵니다 (교육 타입, activityTypeID=6)."""
+        return self._fetch_linkareer(
+            filter_by={"activityTypeID": 6, "status": "OPEN"},
+            label="부트캠프",
+        )
 
     def fetch_campuspick(self):
         try:
@@ -175,7 +172,8 @@ class HackathonBot:
                             prefix = "🎓 [부트캠프/교육]" if cat_id == 111 else "🇰🇷 [캠퍼스픽]"
                             results.append({"title": f"{prefix} {a['title']}", "url": f"https://www2.campuspick.com/contest/view?id={a['id']}", "host": "CampusPick", "date": a.get("endDate","상세 확인")})
             return results
-        except Exception as e: print(f"CampusPick 예외: {e}")
+        except Exception as e:
+            print(f"CampusPick 예외: {e}")
         return []
 
     def fetch_devevent(self):
@@ -192,53 +190,13 @@ class HackathonBot:
                         icon = "🎓" if any(b in title.lower() for b in ['부트캠프', '교육', 'kdt']) else "🇰🇷"
                         results.append({"title": f"{icon} [데브이벤트] {title}", "url": link, "host": "DevEvent", "date": "상세 확인"})
                 return results
-        except: pass
+        except:
+            pass
         return []
 
     # ─────────────────────────────────────────────────────
     # 유틸리티 및 실행 섹션
     # ─────────────────────────────────────────────────────
-
-    def _extract_nodes(self, data, depth=0):
-        if depth > 4: return []
-        if isinstance(data, list): return data
-        if isinstance(data, dict):
-            for key in ('nodes', 'list', 'edges', 'items'):
-                if key in data and isinstance(data[key], list): return data[key]
-            for v in data.values():
-                res = self._extract_nodes(v, depth+1)
-                if res: return res
-        return []
-
-    def run(self):
-        print("🔍 해커톤 및 부트캠프 정보 수집을 시작합니다...")
-        all_items = []
-        tasks = [
-            ("Devpost", self.fetch_devpost), ("MLH", self.fetch_mlh),
-            ("DevEvent", self.fetch_devevent), ("CampusPick", self.fetch_campuspick),
-            ("Linkareer", self.fetch_linkareer)
-        ]
-        
-        for name, fetcher in tasks:
-            try:
-                found = fetcher()
-                print(f"📡 {name}: {len(found)}개 발견")
-                all_items.extend(found)
-            except Exception as e: print(f"❌ {name} 오류: {e}")
-
-        # 중복 제거 (제목 기준) 및 신규 항목 필터링
-        seen_titles, deduped = set(), []
-        for item in all_items:
-            if item['title'] not in seen_titles:
-                seen_titles.add(item['title'])
-                deduped.append(item)
-
-        new_items = [i for i in deduped if i['title'] not in self.sent_list]
-        print(f"📊 최종 신규 공고: {len(new_items)}개")
-        
-        if new_items:
-            self.send_to_discord(new_items)
-            self.save_sent_list(new_items)
 
     def send_to_discord(self, items):
         for i in range(0, len(items), 10):
@@ -251,6 +209,40 @@ class HackathonBot:
                 "content": "🚀 **새로운 소식이 도착했습니다!**" if i == 0 else "",
                 "embeds": embeds
             })
+
+    def run(self):
+        print("🔍 해커톤 및 부트캠프 정보 수집을 시작합니다...")
+        all_items = []
+        tasks = [
+            ("Devpost", self.fetch_devpost),
+            ("MLH", self.fetch_mlh),
+            ("DevEvent", self.fetch_devevent),
+            ("CampusPick", self.fetch_campuspick),
+            ("링커리어 해커톤", self.fetch_linkareer_hackathon),
+            ("링커리어 부트캠프", self.fetch_linkareer_bootcamp),
+        ]
+
+        for name, fetcher in tasks:
+            try:
+                found = fetcher()
+                print(f"📡 {name}: {len(found)}개 발견")
+                all_items.extend(found)
+            except Exception as e:
+                print(f"❌ {name} 오류: {e}")
+
+        # 중복 제거 (제목 기준) 및 신규 항목 필터링
+        seen_titles, deduped = set(), []
+        for item in all_items:
+            if item['title'] not in seen_titles:
+                seen_titles.add(item['title'])
+                deduped.append(item)
+
+        new_items = [i for i in deduped if i['title'] not in self.sent_list]
+        print(f"📊 최종 신규 공고: {len(new_items)}개")
+
+        if new_items:
+            self.send_to_discord(new_items)
+            self.save_sent_list(new_items)
 
 if __name__ == "__main__":
     if WEBHOOK_URL:
