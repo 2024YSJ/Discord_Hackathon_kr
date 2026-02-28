@@ -73,36 +73,81 @@ class HackathonBot:
         return []
 
     def fetch_linkareer(self):
-        """링커리어 검색 API 활용: 부트캠프와 해커톤 통합 수집"""
-        results, today, seen_ids = [], datetime.now().strftime('%Y-%m-%d'), set()
-        gql_headers = {
-            "Content-Type": "application/json", "Origin": "https://linkareer.com",
-            "Referer": "https://linkareer.com/", "User-Agent": self.headers["User-Agent"]
-        }
-        search_query = """
-        query GetUnifiedSearch($keyword: String!, $page: Int) {
-          unifiedSearch(keyword: $keyword, page: $page, filter: {type: ACTIVITY}) {
-            activities { nodes { id title dueDate hostName } }
-          }
-        }
         """
-        for keyword in ["부트캠프", "해커톤"]:
+        링커리어 수집 문제 해결: 
+        1. 검증된 activities/activityList 쿼리 사용 (검색 쿼리 지양)
+        2. 가져온 데이터 내에서 '부트캠프'와 '해커톤' 키워드로 필터링
+        3. ID 기반 중복 제거
+        """
+        results = []
+        today = datetime.now().strftime('%Y-%m-%d')
+        seen_ids = set()
+
+        gql_headers = {
+            "Content-Type": "application/json",
+            "User-Agent": self.headers["User-Agent"],
+            "Referer": "https://linkareer.com/",
+            "Origin": "https://linkareer.com",
+            "Accept": "application/json",
+        }
+
+        # 검색 API(unifiedSearch) 대신, 서버가 확실히 응답하는 '리스트형' 쿼리 사용
+        queries = [
+            # 최신 활동 전체 리스트 (가장 확실함)
+            {"query": '{ activities(first: 50) { nodes { id title dueDate hostName categories { name } } } }'},
+            # 활동 리스트 (보조용)
+            {"query": '{ activityList(page: 1, pageSize: 50) { list { id title dueDate hostName categories { name } } } }'}
+        ]
+
+        # 수집 대상 키워드
+        target_keywords = ['해커톤', 'hackathon', '공모전', '부트캠프', 'bootcamp', 'kdt', '교육', '양성']
+
+        for payload in queries:
             try:
-                payload = {"query": search_query, "variables": {"keyword": keyword, "page": 1}}
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
-                if res.status_code == 200:
-                    nodes = self._extract_nodes(res.json().get('data', {}))
-                    for node in nodes:
-                        nid = node.get('id')
-                        if not nid or nid in seen_ids: continue
-                        title = node.get('title', '')
+                if res.status_code != 200:
+                    continue
+                
+                body = res.json()
+                if body.get('errors'): 
+                    continue
+
+                # 이전 코드에서 잘 동작했던 재귀 탐색기 사용
+                nodes = self._extract_nodes(body.get('data', {}))
+                if not nodes: 
+                    continue
+
+                for node in nodes:
+                    nid = node.get('id')
+                    if not nid or nid in seen_ids: 
+                        continue
+                    
+                    title = node.get('title', '')
+                    # 카테고리 태그들 결합
+                    cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
+                    full_text = (title + cats).lower()
+
+                    # 키워드 체크
+                    if any(k in full_text for k in target_keywords):
                         due = (node.get('dueDate') or '')[:10]
-                        if due and due < today: continue
+                        if due and due < today: 
+                            continue
+
                         seen_ids.add(nid)
-                        is_boot = any(k in title.lower() or k in keyword for k in ['부트캠프', 'bootcamp', 'kdt', '교육'])
-                        icon = "🎓 [부트캠프]" if is_boot else "🇰🇷 [링커리어]"
-                        results.append({"title": f"{icon} {title}", "url": f"https://linkareer.com/activity/{nid}", "host": node.get('hostName') or "Linkareer", "date": due or "상세 확인"})
-            except Exception as e: print(f"Linkareer {keyword} 예외: {e}")
+                        
+                        # 부트캠프 여부에 따른 아이콘 및 접두사 결정
+                        is_bootcamp = any(k in full_info for k in ['부트캠프', 'bootcamp', 'kdt', '교육']) if 'full_info' in locals() else any(k in full_text for k in ['부트캠프', 'bootcamp', 'kdt', '교육'])
+                        icon = "🎓 [부트캠프]" if is_bootcamp else "🇰🇷 [링커리어]"
+                        
+                        results.append({
+                            "title": f"{icon} {title}",
+                            "url": f"https://linkareer.com/activity/{nid}",
+                            "host": node.get('hostName') or "Linkareer",
+                            "date": due or "상세 확인"
+                        })
+            except Exception as e:
+                print(f"  Linkareer 수집 중 예외: {e}")
+
         return results
 
     def fetch_campuspick(self):
