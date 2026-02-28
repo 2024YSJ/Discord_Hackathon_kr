@@ -74,8 +74,8 @@ class HackathonBot:
 
     def fetch_linkareer(self):
         """
-        최초 제시된 인트로스펙션 + 리스트 호출 로직을 기반으로
-        부트캠프 키워드 필터링 기능을 추가하여 확장한 버전입니다.
+        링커리어 검색 API 대응:
+        '부트캠프'와 '해커톤' 검색 결과를 각각 쿼리하여 수집합니다.
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
@@ -83,72 +83,71 @@ class HackathonBot:
 
         gql_headers = {
             "Content-Type": "application/json",
-            "User-Agent": self.headers["User-Agent"],
-            "Referer": "https://linkareer.com/",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Origin": "https://linkareer.com",
-            "Accept": "application/json",
+            "Referer": "https://linkareer.com/",
         }
 
-        # Step 1: 최초 코드의 핵심 - 인트로스펙션으로 실제 Query 필드 파악
-        actual_fields = []
-        try:
-            res = requests.post(
-                "https://api.linkareer.com/graphql",
-                json={"query": "{ __schema { queryType { fields { name } } } }"},
-                headers=gql_headers, timeout=10
-            )
-            if res.status_code == 200:
-                body = res.json()
-                if not body.get('errors'):
-                    actual_fields = [f['name'] for f in body.get('data',{}).get('__schema',{}).get('queryType',{}).get('fields',[])]
-        except Exception as e:
-            print(f"  Linkareer 인트로스펙션 예외: {e}")
+        # 검색 결과 페이지에서 사용하는 실제 unifiedSearch 쿼리
+        search_query = """
+        query GetUnifiedSearch($keyword: String!, $page: Int, $filter: UnifiedSearchFilter) {
+          unifiedSearch(keyword: $keyword, page: $page, filter: $filter) {
+            activities {
+              nodes {
+                id
+                title
+                dueDate
+                hostName
+                categories {
+                  name
+                }
+              }
+            }
+          }
+        }
+        """
 
-        # Step 2: 동작이 검증된 리스트형 쿼리들 구성
-        queries = []
-        if 'activities' in actual_fields:
-            queries.append({"query": '{ activities(first: 50) { nodes { id title dueDate hostName categories { name } } } }'})
-        if 'activityList' in actual_fields:
-            queries.append({"query": '{ activityList(page: 1, pageSize: 50) { list { id title dueDate hostName categories { name } } } }'})
+        for keyword in ["부트캠프", "해커톤"]:
+            payload = {
+                "query": search_query,
+                "variables": {
+                    "keyword": keyword,
+                    "page": 1,
+                    "filter": {"type": "ACTIVITY"}
+                }
+            }
 
-        # 만약 인트로스펙션이 실패하더라도 시도할 범용 패턴
-        if not queries:
-            queries.append({"query": '{ activities(first: 50) { nodes { id title dueDate hostName categories { name } } } }'})
-
-        # 필터링 키워드 (해커톤 + 부트캠프 통합)
-        target_keywords = ['해커톤', 'hackathon', '공모전', '부트캠프', 'bootcamp', 'kdt', '교육', '양성', '과정']
-
-        for payload in queries:
             try:
-                time.sleep(1.0)
+                time.sleep(1.0) # 차단 방지
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
-                if res.status_code != 200: continue
                 
-                body = res.json()
-                if body.get('errors'): continue
+                if res.status_code == 200:
+                    body = res.json()
+                    # 경로 탐색: unifiedSearch -> activities -> nodes
+                    data = body.get('data', {}) or {}
+                    search_res = data.get('unifiedSearch', {}) or {}
+                    activities_data = search_res.get('activities', {}) or {}
+                    nodes = activities_data.get('nodes', [])
 
-                # 최초 코드에서 사용한 재귀 탐색 함수 활용
-                nodes = self._extract_nodes(body.get('data', {}))
-                if not nodes: continue
+                    # 만약 구조가 다를 경우 기존 재귀 탐색기(self._extract_nodes) 활용
+                    if not nodes:
+                        nodes = self._extract_nodes(data)
 
-                for node in nodes:
-                    nid = node.get('id')
-                    if not nid or nid in seen_ids: continue
-                    
-                    title = node.get('title', '')
-                    # 카테고리 태그 이름 추출
-                    cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
-                    full_text = (title + " " + cats).lower()
-
-                    # 확장 기능: 해커톤과 부트캠프 키워드 모두 검사
-                    if any(k in full_text for k in target_keywords):
+                    for node in nodes:
+                        nid = node.get('id')
+                        if not nid or nid in seen_ids: continue
+                        
+                        title = node.get('title', '')
                         due = (node.get('dueDate') or '')[:10]
+                        
+                        # 마감일 체크
                         if due and due < today: continue
-
+                        
                         seen_ids.add(nid)
                         
-                        # 아이콘 분기 로직
-                        is_boot = any(k in full_text for k in ['부트캠프', 'bootcamp', 'kdt', '교육', '양성', '과정'])
+                        # 카테고리 분석 후 아이콘 분기
+                        cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
+                        is_boot = any(k in (title + " " + cats).lower() for k in ['부트캠프', 'bootcamp', 'kdt', '교육', '양성', '과정'])
                         icon = "🎓 [부트캠프]" if is_boot else "🇰🇷 [링커리어]"
                         
                         results.append({
@@ -157,8 +156,11 @@ class HackathonBot:
                             "host": node.get('hostName') or "Linkareer",
                             "date": due or "상세 확인"
                         })
+                else:
+                    print(f"  Linkareer {keyword} API 오류: {res.status_code}")
+                    
             except Exception as e:
-                print(f"  Linkareer 데이터 추출 중 예외: {e}")
+                print(f"  Linkareer {keyword} 수집 중 예외: {e}")
 
         return results
 
