@@ -72,16 +72,10 @@ class HackathonBot:
             print(f"MLH 예외: {e}")
         return []
 
-    def fetch_linkareer(self):
-        """
-        링커리어 400 오류 해결 및 문법 수정 버전:
-        1. f-string 중괄호 오류 및 따옴표 꼬임 수정
-        2. 쿼리문에 인자를 직접 주입하여 타입 에러 방지
-        """
+def fetch_linkareer(self):
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
         seen_ids = set()
-
         gql_headers = {
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
@@ -90,8 +84,8 @@ class HackathonBot:
         }
 
         for keyword in ["부트캠프", "해커톤"]:
-            # f-string 내에서 중괄호를 표현하려면 {{ }} 를 사용해야 합니다.
-            raw_query = f"""
+            # f-string 내 중괄호는 {{ }}로 표현해야 합니다.
+            raw_query = """
             query {{
               unifiedSearch(keyword: "{keyword}", page: 1, filter: {{type: ACTIVITY}}) {{
                 activities {{
@@ -106,58 +100,42 @@ class HackathonBot:
                   }
                 }
               }
-            }}
-            
-            # payload 구성 시 딕셔너리 형태로 정확히 전달
+            }}"""
             payload = {"query": raw_query}
-
             try:
                 time.sleep(1.0)
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
-                
-                if res.status_code != 200:
-                    print(f"  Linkareer {keyword} 응답 실패 ({res.status_code}): {res.text[:100]}")
-                    continue
-                
-                body = res.json()
-                data = body.get('data', {})
-                search_res = data.get('unifiedSearch', {}) or {}
-                activities = search_res.get('activities', {}) or {}
-                nodes = activities.get('nodes', [])
+                if res.status_code == 200:
+                    body = res.json()
+                    data = body.get('data', {}) or {}
+                    search_res = data.get('unifiedSearch', {}) or {}
+                    activities = search_res.get('activities', {}) or {}
+                    nodes = activities.get('nodes', [])
 
-                if not nodes:
-                    nodes = self._extract_nodes(data)
+                    if not nodes:
+                        nodes = self._extract_nodes(data)
 
-                for node in nodes:
-                    nid = node.get('id')
-                    if not nid or nid in seen_ids:
-                        continue
-                    
-                    title = node.get('title', '')
-                    due = (node.get('dueDate') or '')[:10]
-                    
-                    if due and due < today:
-                        continue
-
-                    seen_ids.add(nid)
-                    
-                    categories = node.get('categories') or []
-                    cats = ' '.join(c.get('name','') for c in categories)
-                    full_text = (title + " " + cats).lower()
-                    
-                    # 부트캠프 관련 키워드 검사
-                    is_boot = any(k in full_text for k in ['부트캠프', 'bootcamp', 'kdt', '교육', '양성', '과정'])
-                    icon = "🎓 [부트캠프]" if is_boot else "🇰🇷 [링커리어]"
-                    
-                    results.append({
-                        "title": f"{icon} {title}",
-                        "url": f"https://linkareer.com/activity/{nid}",
-                        "host": "Linkareer",
-                        "date": due or "상세 확인"
-                    })
+                    for node in nodes:
+                        nid = node.get('id')
+                        if not nid or nid in seen_ids: continue
+                        title = node.get('title', '')
+                        due = (node.get('dueDate') or '')[:10]
+                        if due and due < today: continue
+                        seen_ids.add(nid)
+                        
+                        cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
+                        full_text = (title + " " + cats).lower()
+                        is_boot = any(k in full_text for k in ['부트캠프', 'bootcamp', 'kdt', '교육', '양성', '과정'])
+                        icon = "🎓 [부트캠프]" if is_boot else "🇰🇷 [링커리어]"
+                        
+                        results.append({
+                            "title": f"{icon} {title}",
+                            "url": f"https://linkareer.com/activity/{nid}",
+                            "host": "Linkareer",
+                            "date": due or "상세 확인"
+                        })
             except Exception as e:
                 print(f"  Linkareer {keyword} 수집 중 예외: {e}")
-
         return results
 
     def fetch_campuspick(self):
