@@ -74,24 +74,25 @@ class HackathonBot:
 
     def fetch_linkareer(self):
         """
-        링커리어 수집 최종 복구:
-        1. unifiedSearch를 사용하되, 필터와 변수를 서버 규격에 완벽히 맞춤
-        2. 부트캠프와 해커톤을 각각 검색하여 병합
+        링커리어 수집 최종 복구 버전:
+        1. 파이썬 문법 오류(icon 할당 부분) 수정 완료
+        2. unifiedSearch 필드와 Variables 구조를 서버 규격에 완벽히 일치시킴
+        3. 부트캠프와 해커톤을 각각 쿼리하여 결과 병합
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
         seen_ids = set()
 
-        # 헤더 최신화 및 필수 항목 추가
+        # 헤더: 실제 브라우저와 유사하게 구성하여 차단 회피
         gql_headers = {
             "Content-Type": "application/json",
+            "Accept": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Origin": "https://linkareer.com",
-            "Referer": "https://linkareer.com/search?q=%EB%B6%80%ED%8A%B8%EC%BA%A0%ED%94%84",
-            "Accept": "*/*",
+            "Referer": "https://linkareer.com/",
         }
 
-        # 실제 서비스에서 사용하는 표준 통합 검색 쿼리
+        # 링커리어 표준 통합 검색 쿼리
         search_query = """
         query GetUnifiedSearch($keyword: String!, $page: Int!, $filter: UnifiedSearchFilter) {
           unifiedSearch(keyword: $keyword, page: $page, filter: $filter) {
@@ -111,30 +112,39 @@ class HackathonBot:
         """
 
         for keyword in ["부트캠프", "해커톤"]:
-            # 서버가 요구하는 정확한 Variables 구조
+            # Variables 구조를 서버가 예상하는 형태로 정밀 조정
             payload = {
                 "query": search_query,
                 "variables": {
                     "keyword": keyword,
                     "page": 1,
-                    "filter": {"type": "ACTIVITY"}
+                    "filter": {
+                        "type": "ACTIVITY"
+                    }
                 }
             }
 
             try:
-                # 0.5초 대기 (서버 부하 방지 및 차단 회피)
-                time.sleep(0.5)
+                # 봇 탐지 방지 (요청 간 간격 1초)
+                time.sleep(1.0)
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
                 
                 if res.status_code != 200:
-                    print(f"  Linkareer {keyword} 요청 실패: {res.status_code}")
+                    print(f"  Linkareer {keyword} HTTP 오류: {res.status_code}")
                     continue
                 
-                data = res.json().get('data', {})
-                # 경로 탐색: unifiedSearch -> activities -> nodes
-                nodes = data.get('unifiedSearch', {}).get('activities', {}).get('nodes', [])
+                body = res.json()
+                if "errors" in body:
+                    # GraphQL 내부 에러 발생 시 로그 출력
+                    print(f"  Linkareer {keyword} GraphQL 에러: {body['errors'][0].get('message')}")
+                    continue
 
-                # 만약 경로가 다를 경우 기존의 재귀 탐색 활용
+                data = body.get('data', {})
+                search_res = data.get('unifiedSearch', {})
+                activities = search_res.get('activities', {})
+                nodes = activities.get('nodes', [])
+
+                # nodes가 비어있을 경우 재귀 탐색기로 보완
                 if not nodes:
                     nodes = self._extract_nodes(data)
 
@@ -146,15 +156,18 @@ class HackathonBot:
                     title = node.get('title', '')
                     due = (node.get('dueDate') or '')[:10]
                     
+                    # 마감기한 확인 (오늘 이후인 것만)
                     if due and due < today:
                         continue
 
                     seen_ids.add(nid)
                     
-                    # 카테고리 정보 추출
+                    # 카테고리 정보 추출 및 판별
                     cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
-                    is_boot = any(k in (title + cats).lower() for k in ['부트캠프', 'bootcamp', 'kdt', '교육'])
-                    icon = "🎓 [부트캠프]" if is_boot : icon = "🎓 [부트캠프]" if is_boot else "🇰🇷 [링커리어]"
+                    is_boot = any(k in (title + " " + cats).lower() for k in ['부트캠프', 'bootcamp', 'kdt', '교육', '양성', '과정'])
+                    
+                    # 문법 오류 수정된 아이콘 할당 부분
+                    icon = "🎓 [부트캠프]" if is_boot else "🇰🇷 [링커리어]"
                     
                     results.append({
                         "title": f"{icon} {title}",
@@ -163,7 +176,7 @@ class HackathonBot:
                         "date": due or "상세 확인"
                     })
             except Exception as e:
-                print(f"  Linkareer {keyword} 처리 중 예외: {e}")
+                print(f"  Linkareer {keyword} 처리 중 예외 발생: {e}")
 
         return results
 
