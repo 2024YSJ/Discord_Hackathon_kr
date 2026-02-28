@@ -72,7 +72,7 @@ class HackathonBot:
             print(f"MLH 예외: {e}")
         return []
 
-def fetch_linkareer(self):
+    def fetch_linkareer(self):
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
         seen_ids = set()
