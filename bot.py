@@ -396,8 +396,7 @@ class HackathonBot:
 
     def fetch_linkareer(self):
         """
-        링커리어 수집 로직 개선: 
-        필터링 의존도를 낮추고 키워드 매칭 기반으로 부트캠프를 식별합니다.
+        링커리어 통합 검색 API를 사용하여 '부트캠프'와 '해커톤' 공고를 모두 수집합니다.
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
@@ -406,58 +405,73 @@ class HackathonBot:
         gql_headers = {
             "Content-Type": "application/json",
             "User-Agent": self.headers["User-Agent"],
-            "Referer": "https://linkareer.com/list/bootcamp",
+            "Referer": "https://linkareer.com/",
             "Origin": "https://linkareer.com",
             "Accept": "application/json",
         }
 
-        # 필터링에 실패할 경우를 대비해 '전체 최신순'과 '카테고리' 쿼리 병행
-        # activityList 필드가 실제 서버 스키마에 따라 동작하지 않을 수 있으므로 여러 패턴 시도
-        queries = [
-            # 1. 부트캠프 카테고리 명시 시도 (가장 정확하지만 필터명 틀리면 0건)
-            {"query": '{ activityList(filter: {categoryName: "부트캠프"}, page: 1, pageSize: 30) { list { id title dueDate hostName categories { name } } } }'},
-            # 2. 전체 활동 중 최신 50개 (필터 오류 방지용 보험)
-            {"query": '{ activities(first: 50) { nodes { id title dueDate hostName categories { name } } } }'}
-        ]
+        # 링커리어 검색용 GraphQL 쿼리 (unifiedSearch 필드 사용)
+        search_query = """
+        query GetUnifiedSearch($keyword: String!, $page: Int) {
+          unifiedSearch(keyword: $keyword, page: $page, filter: {type: ACTIVITY}) {
+            activities {
+              nodes {
+                id
+                title
+                dueDate
+                hostName
+                categories {
+                  name
+                }
+              }
+            }
+          }
+        }
+        """
 
-        # 부트캠프 판별을 위한 핵심 키워드
-        bootcamp_keywords = ['부트캠프', 'bootcamp', 'kdt', '국비', '양성', '교육과정', 'scampus', 'academy']
-        # 해커톤/공모전 키워드
-        contest_keywords = ['해커톤', 'hackathon', '공모전', '대회', '챌린지']
+        # 수집할 키워드 리스트
+        search_keywords = ["부트캠프", "해커톤"]
 
-        for payload in queries:
+        for keyword in search_keywords:
+            payload = {
+                "query": search_query,
+                "variables": {
+                    "keyword": keyword,
+                    "page": 1
+                }
+            }
+
             try:
+                # 검색 API 호출
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
-                if res.status_code != 200: continue
                 
-                data = res.json().get('data', {})
-                nodes = self._extract_nodes(data)
-                if not nodes: continue
+                if res.status_code == 200:
+                    data = res.json().get('data', {})
+                    search_data = data.get('unifiedSearch', {})
+                    activities_data = search_data.get('activities', {})
+                    nodes = activities_data.get('nodes', [])
 
-                for node in nodes:
-                    nid = node.get('id')
-                    if not nid or nid in seen_ids: continue
-                    
-                    title = node.get('title', '')
-                    # 카테고리 이름들 (List 형태 대응)
-                    cats = node.get('categories') or []
-                    cats_str = ' '.join([c.get('name', '') for c in cats]).lower()
-                    
-                    # 제목 + 카테고리 전체 텍스트 분석
-                    full_info = (title + " " + cats_str).lower()
-                    
-                    # 1. 마감일 체크
-                    due = (node.get('dueDate') or '')[:10]
-                    if due and due < today: continue
+                    # 만약 구조가 다를 경우를 대비한 재귀 탐색 백업
+                    if not nodes:
+                        nodes = self._extract_nodes(data)
 
-                    # 2. 키워드 매칭 (부트캠프 또는 해커톤 관련 공고만 수집)
-                    is_bootcamp = any(k in full_info for k in bootcamp_keywords)
-                    is_contest = any(k in full_info for k in contest_keywords)
+                    for node in nodes:
+                        nid = node.get('id')
+                        if not nid or nid in seen_ids:
+                            continue
+                        
+                        title = node.get('title', '')
+                        due = (node.get('dueDate') or '')[:10]
+                        
+                        # 마감일 지난 공고 제외
+                        if due and due < today:
+                            continue
 
-                    if is_bootcamp or is_contest:
+                        # 중복 방지를 위해 ID 등록
                         seen_ids.add(nid)
                         
-                        # 아이콘 결정 (부트캠프 우선순위)
+                        # 아이콘 및 접두사 결정 (제목에 부트캠프 키워드가 있으면 학사모 아이콘)
+                        is_bootcamp = any(k in title.lower() or k in keyword for k in ['부트캠프', 'bootcamp', 'kdt', '교육'])
                         icon = "🎓 [부트캠프]" if is_bootcamp else "🇰🇷 [링커리어]"
                         
                         results.append({
@@ -466,10 +480,13 @@ class HackathonBot:
                             "host": node.get('hostName') or "Linkareer",
                             "date": due or "상세 확인"
                         })
-            except Exception as e:
-                print(f"  Linkareer 수집 중 오류: {e}")
+                else:
+                    print(f"  Linkareer API 오류 ({keyword}): {res.status_code}")
 
-        print(f"  Linkareer 최종 추출 결과: {len(results)}개")
+            except Exception as e:
+                print(f"  Linkareer {keyword} 수집 중 예외: {e}")
+
+        print(f"  Linkareer 최종 추출 결과: {len(results)}개 (부트캠프 & 해커톤 합계)")
         return results
 
     def _extract_nodes(self, data, depth=0):
