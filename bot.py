@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 import re
 from datetime import datetime
@@ -194,6 +195,157 @@ class HackathonBot:
             pass
         return []
 
+    def fetch_ssafy(self):
+        """SSAFY 공지사항 게시판에서 모집 공고를 가져옵니다."""
+        try:
+            url = "https://www.ssafy.com/ksp/servlet/swp.board.controller.SwpBoardServlet"
+            params = {"p_process": "select-board-list", "p_tabseq": "226504", "p_pageno": "1"}
+            res = requests.get(url, params=params, headers=self.headers, timeout=15)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            results = []
+            for row in soup.select('table.tbl-list tbody tr'):
+                subj_td = row.select_one('td.subj')
+                if not subj_td:
+                    continue
+                title = subj_td.get_text(strip=True)
+                if not any(k in title for k in ['모집', '공고', '기수']):
+                    continue
+                seq_match = re.search(r'goViewPage\((\d+)\)', str(row))
+                if not seq_match:
+                    continue
+                seq = seq_match.group(1)
+                detail_url = (
+                    f"https://www.ssafy.com/ksp/servlet/swp.board.controller.SwpBoardServlet"
+                    f"?p_process=select-board-view&p_tabseq=226504&p_seq={seq}"
+                )
+                tds = row.find_all('td')
+                date = tds[-1].get_text(strip=True) if len(tds) >= 2 else '미정'
+                results.append({
+                    "title": f"[SSAFY] {title}",
+                    "url": detail_url,
+                    "host": "SSAFY (삼성 청년 SW 아카데미)",
+                    "date": date,
+                })
+            return results
+        except Exception as e:
+            print(f"SSAFY 수집 실패: {e}")
+        return []
+
+    def fetch_woowacourse(self):
+        """우아한테크코스 공지사항에서 모집 공고를 가져옵니다."""
+        try:
+            res = requests.get("https://woowacourse.io/notice", headers=self.headers, timeout=15)
+            soup = BeautifulSoup(res.text, 'html.parser')
+            script = soup.find('script', id='__NEXT_DATA__')
+            if not script:
+                return []
+            blocks = (
+                json.loads(script.string)
+                .get('props', {})
+                .get('pageProps', {})
+                .get('recordMap', {})
+                .get('block', {})
+            )
+            results = []
+            for block_id, block_data in blocks.items():
+                value = block_data.get('value', {})
+                if value.get('type') != 'page':
+                    continue
+                props = value.get('properties', {})
+                title_arr = props.get('title', [])
+                if not title_arr:
+                    continue
+                title = title_arr[0][0] if title_arr else ''
+                if not title or not any(k in title for k in ['모집', '지원', '과정', '기수', '선발']):
+                    continue
+                # 날짜: Notion 속성 키가 동적이므로 YYYY로 시작하는 문자열 값 탐색
+                date = '미정'
+                for key, val in props.items():
+                    if key == 'title' or not val:
+                        continue
+                    try:
+                        candidate = val[0][0]
+                        if isinstance(candidate, str) and re.match(r'\d{4}', candidate):
+                            date = candidate[:10]
+                            break
+                    except (IndexError, TypeError):
+                        pass
+                results.append({
+                    "title": f"[우테코] {title}",
+                    "url": f"https://woowacourse.io/notice/{block_id}",
+                    "host": "우아한테크코스",
+                    "date": date,
+                })
+            return results
+        except Exception as e:
+            print(f"우아한테크코스 수집 실패: {e}")
+        return []
+
+    def fetch_boostcamp(self):
+        """네이버 부스트캠프 모집 공고를 가져옵니다."""
+        results = []
+        pages = [
+            ("https://boostcamp.connect.or.kr/guide_ai.html", "AI Tech"),
+            ("https://boostcamp.connect.or.kr/main_wm.html", "Web·Mobile"),
+        ]
+        for url, course in pages:
+            try:
+                res = requests.get(url, headers=self.headers, timeout=15)
+                if res.status_code != 200:
+                    continue
+                soup = BeautifulSoup(res.text, 'html.parser')
+                text = soup.get_text(separator=' ', strip=True)
+                # 모집 중 여부 확인
+                recruiting_keywords = ['모집 중', '지원 기간', '모집 기간', '접수 기간', '모집합니다', '지원하기', '원서접수']
+                if not any(k in text for k in recruiting_keywords):
+                    continue
+                # 기수 추출
+                cohort_match = re.search(r'(\d+)기', text)
+                cohort = f" {cohort_match.group(1)}기" if cohort_match else ""
+                # 날짜 추출
+                date_match = re.search(r'(\d{4}[년.\-]\s*\d{1,2}[월.\-]\s*\d{1,2}[일]?)', text)
+                date = date_match.group(1).strip() if date_match else '상세 확인'
+                results.append({
+                    "title": f"[부스트캠프] {course}{cohort} 모집",
+                    "url": url,
+                    "host": "네이버 부스트캠프",
+                    "date": date,
+                })
+            except Exception as e:
+                print(f"부스트캠프 {course} 수집 실패: {e}")
+        return results
+
+    def fetch_kt_aivle(self):
+        """KT 에이블스쿨 공지사항에서 모집 공고를 가져옵니다."""
+        try:
+            url = "https://aivle.kt.co.kr/home/brd/bbs/listAtclJson"
+            params = {"bbsCd": "NOTICE", "pageIndex": "1"}
+            res = requests.get(url, params=params, headers=self.headers, timeout=15)
+            res.raise_for_status()
+            results = []
+            for item in res.json().get("returnList", []):
+                title = item.get("atclTitle", "")
+                if not any(k in title for k in ['모집', '공고', '기수', '과정', '선발']):
+                    continue
+                seq = item.get("atclSn", "")
+                detail_url = (
+                    f"https://aivle.kt.co.kr/home/brd/bbs/view?bbsCd=NOTICE&atclSn={seq}"
+                    if seq else "https://aivle.kt.co.kr/home/main/goMenuPage?mcd=MC00000061"
+                )
+                date = item.get("regDttm", "미정")
+                if date and len(date) > 10:
+                    date = date[:10]
+                results.append({
+                    "title": f"[KT 에이블스쿨] {title}",
+                    "url": detail_url,
+                    "host": "KT 에이블스쿨 (AIVLE School)",
+                    "date": date,
+                })
+            return results
+        except Exception as e:
+            print(f"KT 에이블스쿨 수집 실패: {e}")
+        return []
+
     # ─────────────────────────────────────────────────────
     # 유틸리티 및 실행 섹션
     # ─────────────────────────────────────────────────────
@@ -220,6 +372,10 @@ class HackathonBot:
             ("CampusPick", self.fetch_campuspick),
             ("링커리어 해커톤", self.fetch_linkareer_hackathon),
             ("링커리어 부트캠프", self.fetch_linkareer_bootcamp),
+            ("SSAFY", self.fetch_ssafy),
+            ("우아한테크코스", self.fetch_woowacourse),
+            ("부스트캠프", self.fetch_boostcamp),
+            ("KT 에이블스쿨", self.fetch_kt_aivle),
         ]
 
         for name, fetcher in tasks:
