@@ -74,10 +74,10 @@ class HackathonBot:
 
     def fetch_linkareer(self):
         """
-        링커리어 수집 문제 해결: 
-        1. 검증된 activities/activityList 쿼리 사용 (검색 쿼리 지양)
-        2. 가져온 데이터 내에서 '부트캠프'와 '해커톤' 키워드로 필터링
-        3. ID 기반 중복 제거
+        링커리어 수집 복구 버전:
+        1. 서버가 차단하기 쉬운 '검색(unifiedSearch)' 대신 '리스트(activities)' 쿼리 사용
+        2. 수집된 데이터 내에서 '해커톤'과 '부트캠프' 키워드를 동시에 필터링
+        3. 이전의 안정적인 _extract_nodes 재귀 탐색 활용
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
@@ -86,57 +86,62 @@ class HackathonBot:
         gql_headers = {
             "Content-Type": "application/json",
             "User-Agent": self.headers["User-Agent"],
-            "Referer": "https://linkareer.com/",
+            "Referer": "https://linkareer.com/list/bootcamp", # Referer를 구체적으로 설정
             "Origin": "https://linkareer.com",
             "Accept": "application/json",
         }
 
-        # 검색 API(unifiedSearch) 대신, 서버가 확실히 응답하는 '리스트형' 쿼리 사용
+        # 서버가 에러를 뱉지 않는 가장 대중적인(Public) 쿼리 패턴 2가지
         queries = [
-            # 최신 활동 전체 리스트 (가장 확실함)
+            # 패턴 A: 최신 활동 전체 노드 (부트캠프, 공모전 섞여 있음)
             {"query": '{ activities(first: 50) { nodes { id title dueDate hostName categories { name } } } }'},
-            # 활동 리스트 (보조용)
+            # 패턴 B: 활동 리스트 (보조용)
             {"query": '{ activityList(page: 1, pageSize: 50) { list { id title dueDate hostName categories { name } } } }'}
         ]
 
-        # 수집 대상 키워드
+        # 필터링할 키워드 통합 (해커톤 + 부트캠프)
         target_keywords = ['해커톤', 'hackathon', '공모전', '부트캠프', 'bootcamp', 'kdt', '교육', '양성']
 
         for payload in queries:
             try:
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
+                
+                # 만약 400 에러 등이 나면 다음 패턴으로 이동
                 if res.status_code != 200:
                     continue
                 
                 body = res.json()
-                if body.get('errors'): 
+                if body.get('errors'):
                     continue
 
-                # 이전 코드에서 잘 동작했던 재귀 탐색기 사용
+                # 질문자님이 이전에 성공했던 '재귀 탐색' 함수 호출
                 nodes = self._extract_nodes(body.get('data', {}))
-                if not nodes: 
+                if not nodes:
                     continue
 
                 for node in nodes:
                     nid = node.get('id')
-                    if not nid or nid in seen_ids: 
+                    if not nid or nid in seen_ids:
                         continue
                     
                     title = node.get('title', '')
-                    # 카테고리 태그들 결합
+                    # 카테고리 태그 이름들을 공백으로 합침
                     cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
-                    full_text = (title + cats).lower()
+                    
+                    # 제목과 카테고리 전체에서 키워드 검사
+                    full_text = (title + " " + cats).lower()
 
-                    # 키워드 체크
                     if any(k in full_text for k in target_keywords):
                         due = (node.get('dueDate') or '')[:10]
-                        if due and due < today: 
+                        
+                        # 마감기한 체크
+                        if due and due < today:
                             continue
 
                         seen_ids.add(nid)
                         
-                        # 부트캠프 여부에 따른 아이콘 및 접두사 결정
-                        is_bootcamp = any(k in full_info for k in ['부트캠프', 'bootcamp', 'kdt', '교육']) if 'full_info' in locals() else any(k in full_text for k in ['부트캠프', 'bootcamp', 'kdt', '교육'])
+                        # 부트캠프 성격인지 확인하여 아이콘 분기
+                        is_bootcamp = any(k in full_text for k in ['부트캠프', 'bootcamp', 'kdt', '교육'])
                         icon = "🎓 [부트캠프]" if is_bootcamp else "🇰🇷 [링커리어]"
                         
                         results.append({
@@ -146,8 +151,9 @@ class HackathonBot:
                             "date": due or "상세 확인"
                         })
             except Exception as e:
-                print(f"  Linkareer 수집 중 예외: {e}")
+                print(f"  Linkareer 수집 중 예외 발생: {e}")
 
+        # 모든 쿼리 시도 후 결과 반환
         return results
 
     def fetch_campuspick(self):
