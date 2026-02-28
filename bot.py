@@ -74,10 +74,9 @@ class HackathonBot:
 
     def fetch_linkareer(self):
         """
-        링커리어 400 오류 해결 버전:
-        1. Variables 타입 오류를 방지하기 위해 쿼리문에 인자를 직접 주입
-        2. 필터 구조를 단순화하여 서버 거부 반응 최소화
-        3. 부트캠프와 해커톤 키워드를 순차적으로 조회
+        링커리어 400 오류 해결 및 문법 수정 버전:
+        1. f-string 중괄호 오류 및 따옴표 꼬임 수정
+        2. 쿼리문에 인자를 직접 주입하여 타입 에러 방지
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
@@ -91,7 +90,7 @@ class HackathonBot:
         }
 
         for keyword in ["부트캠프", "해커톤"]:
-            # 400 오류를 피하기 위해 variables 대신 쿼리 내부에 직접 값을 넣는 전략
+            # f-string 내에서 중괄호를 표현하려면 {{ }} 를 사용해야 합니다.
             raw_query = f"""
             query {{
               unifiedSearch(keyword: "{keyword}", page: 1, filter: {{type: ACTIVITY}}) {{
@@ -108,24 +107,22 @@ class HackathonBot:
                 }
               }
             }}
-            """
             
-            payload = {{"query": raw_query}}
-            """
+            # payload 구성 시 딕셔너리 형태로 정확히 전달
+            payload = {"query": raw_query}
 
             try:
                 time.sleep(1.0)
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
                 
                 if res.status_code != 200:
-                    # 400 오류 발생 시 상세 내용 확인을 위해 로그 출력
                     print(f"  Linkareer {keyword} 응답 실패 ({res.status_code}): {res.text[:100]}")
                     continue
                 
                 body = res.json()
                 data = body.get('data', {})
-                search_res = data.get('unifiedSearch', {})
-                activities = search_res.get('activities', {})
+                search_res = data.get('unifiedSearch', {}) or {}
+                activities = search_res.get('activities', {}) or {}
                 nodes = activities.get('nodes', [])
 
                 if not nodes:
@@ -144,7 +141,8 @@ class HackathonBot:
 
                     seen_ids.add(nid)
                     
-                    cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
+                    categories = node.get('categories') or []
+                    cats = ' '.join(c.get('name','') for c in categories)
                     full_text = (title + " " + cats).lower()
                     
                     # 부트캠프 관련 키워드 검사
@@ -154,7 +152,7 @@ class HackathonBot:
                     results.append({
                         "title": f"{icon} {title}",
                         "url": f"https://linkareer.com/activity/{nid}",
-                        "host": node.get('hostName') or "Linkareer",
+                        "host": "Linkareer",
                         "date": due or "상세 확인"
                     })
             except Exception as e:
