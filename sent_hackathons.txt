@@ -331,3 +331,5 @@ AWS Activate Program for Web3 Startups
 🇰🇷 [캠퍼스픽] 카카오임팩트/브라이언임팩트 AI_TOP_100 (CAMPUS) 신청자모집
 🇰🇷 [캠퍼스픽] AI영상 서비스 MVP 해커톤
 🇰🇷 [캠퍼스픽] 카카오 멘토와 함께하는 카카오테크 부트캠프 교육생 모집
+🇰🇷 [데브이벤트] 2026 GDGoC KR HACKATHON: ONE WAVE
+🎓 [데브이벤트] 글로벌 파워 플랫폼 & 에이전트 부트캠프 2026 (Global Power Platform & Agent Bootcamp)
