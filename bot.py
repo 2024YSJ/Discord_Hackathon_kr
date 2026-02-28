@@ -150,14 +150,19 @@ class HackathonBot:
     def fetch_devevent(self):
         try:
             now = datetime.now()
+            # Dev-Event 저장소의 현재 월 파일 접근
             url = f"https://raw.githubusercontent.com/brave-people/Dev-Event/master/end_event/{now.year}/{str(now.year)[2:]}_{str(now.month).zfill(2)}.md"
             res = requests.get(url, timeout=15)
             if res.status_code == 200:
                 results = []
+                # 제목과 링크 추출을 위한 정규식
                 for m in re.finditer(r'__\[([^\]]+)\]\((https?://[^\)]+)\)__', res.text):
                     title, link = m.group(1), m.group(2)
-                    if any(k in title for k in ['해커톤', 'Hackathon', 'hackathon', '공모전', '경진대회']):
-                        results.append({"title": f"🇰🇷 [데브이벤트] {title}", "url": link, "host": "DevEvent", "date": "상세 확인"})
+                    # 검색 키워드 확장: 부트캠프, 교육, KDT 등 포함
+                    target_keywords = ['해커톤', 'Hackathon', '공모전', '경진대회', '부트캠프', 'Bootcamp', '교육', 'KDT', '양성과정']
+                    if any(k.lower() in title.lower() for k in target_keywords):
+                        icon = "🎓" if "부트캠프" in title or "교육" in title else "🇰🇷"
+                        results.append({"title": f"{icon} [데브이벤트] {title}", "url": link, "host": "DevEvent", "date": "상세 확인"})
                 return results
         except Exception as e:
             print(f"DevEvent 예외: {e}")
@@ -166,17 +171,28 @@ class HackathonBot:
     def fetch_campuspick(self):
         try:
             h = self.headers.copy()
-            h.update({"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://www2.campuspick.com", "Referer": "https://www2.campuspick.com/contest?category=108"})
+            h.update({"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://www2.campuspick.com", "Referer": "https://www2.campuspick.com/"})
             today, results = datetime.now().strftime('%Y-%m-%d'), []
-            for offset in range(0, 40, 20):
-                res = requests.post("https://api2.campuspick.com/find/activity/list", data={"target":1,"limit":20,"offset":offset,"categoryId":108}, headers=h, timeout=15)
-                if res.status_code != 200: break
-                activities = res.json().get("result", {}).get("activities", [])
-                if not activities: break
-                valid = [a for a in activities if a.get("endDate","") >= today]
-                for a in valid:
-                    results.append({"title": f"🇰🇷 [캠퍼스픽] {a['title']}", "url": f"https://www2.campuspick.com/contest/view?id={a['id']}", "host": "CampusPick", "date": a.get("endDate","상세 확인")})
-                if not valid: break
+            
+            # 108: 공모전, 111: 교육/강연 (부트캠프가 주로 올라오는 카테고리)
+            for cat_id in [108, 111]:
+                for offset in range(0, 40, 20):
+                    res = requests.post("https://api2.campuspick.com/find/activity/list", 
+                                        data={"target":1,"limit":20,"offset":offset,"categoryId":cat_id}, 
+                                        headers=h, timeout=15)
+                    if res.status_code != 200: break
+                    activities = res.json().get("result", {}).get("activities", [])
+                    if not activities: break
+                    
+                    valid = [a for a in activities if a.get("endDate","") >= today]
+                    for a in valid:
+                        prefix = "🎓 [부트캠프/교육]" if cat_id == 111 else "🇰🇷 [캠퍼스픽]"
+                        results.append({
+                            "title": f"{prefix} {a['title']}", 
+                            "url": f"https://www2.campuspick.com/contest/view?id={a['id']}", 
+                            "host": "CampusPick", 
+                            "date": a.get("endDate","상세 확인")
+                        })
             return results
         except Exception as e:
             print(f"CampusPick 예외: {e}")
@@ -380,14 +396,7 @@ class HackathonBot:
 
     def fetch_linkareer(self):
         """
-        [확인된 사실]
-        - URL 구조: linkareer.com/activity/{id} 확인됨
-        - linkareer.com 페이지들은 CSR(Next.js)이라 HTML 파싱 불가
-        - api.linkareer.com/graphql: 400 반환 (GET), POST 필요
-        - GraphQL 스키마 불명확
-
-        [전략] GraphQL 인트로스펙션으로 실제 필드명을 먼저 파악 후 올바른 쿼리 사용.
-        인트로스펙션 실패 시 여러 쿼리 패턴 순차 시도.
+        링커리어 GraphQL 기반 해커톤 및 부트캠프 수집 함수
         """
         results = []
         today = datetime.now().strftime('%Y-%m-%d')
@@ -400,7 +409,7 @@ class HackathonBot:
             "Accept": "application/json",
         }
 
-        # Step 1: 인트로스펙션으로 실제 Query 필드 파악
+        # Step 1: 인트로스펙션으로 실제 Query 필드 파악 (기존 로직 유지)
         actual_fields = []
         try:
             res = requests.post(
@@ -412,58 +421,69 @@ class HackathonBot:
                 body = res.json()
                 if not body.get('errors'):
                     actual_fields = [f['name'] for f in body.get('data',{}).get('__schema',{}).get('queryType',{}).get('fields',[])]
-                    print(f"  Linkareer GraphQL 필드: {actual_fields[:10]}")
         except Exception as e:
             print(f"  Linkareer 인트로스펙션 예외: {e}")
 
-        # Step 2: 인트로스펙션 결과에 맞는 쿼리 또는 여러 패턴 시도
-        # 알려진 패턴: activities, activityList, contest, hackathons 등
+        # Step 2: 해커톤과 부트캠프를 모두 잡기 위한 쿼리 생성
         queries = []
-
-        # 인트로스펙션으로 필드 확인된 경우 맞춤 쿼리 추가
+        
+        # 1. 부트캠프/해커톤 카테고리 필터링 쿼리 (필드 존재 시)
         if 'activityList' in actual_fields:
-            queries.append({"query": '{ activityList(filter: {categoryName: "해커톤"}, page: 1, pageSize: 20) { list { id title dueDate } } }'})
-        if 'activities' in actual_fields:
-            queries.append({"query": '{ activities(first: 30) { nodes { id title dueDate categories { name } } } }'})
-            queries.append({"query": '{ activities(first: 30, type: "hackathon") { nodes { id title dueDate } } }'})
+            # 부트캠프 필터 추가
+            queries.append({"query": '{ activityList(filter: {categoryName: "부트캠프"}, page: 1, pageSize: 20) { list { id title dueDate categories { name } } } }'})
+            # 해커톤 필터 추가
+            queries.append({"query": '{ activityList(filter: {categoryName: "해커톤"}, page: 1, pageSize: 20) { list { id title dueDate categories { name } } } }'})
+        
+        # 2. 범용 쿼리 (필터링 없이 최신 데이터 수집 후 키워드 필터링)
+        queries.append({"query": '{ activities(first: 50) { nodes { id title dueDate categories { name } } } }'})
 
-        # 인트로스펙션 무관 범용 패턴들
-        queries += [
-            {"query": '{ activities(first: 50) { nodes { id title dueDate categories { name } } } }'},
-            {"query": '{ activityList(page: 1, pageSize: 30) { list { id title dueDate categories { name } } } }'},
-            {"query": '{ contests(first: 30, filter: {category: "해커톤"}) { nodes { id title dueDate } } }'},
-        ]
+        # 수집 및 필터링 키워드 정의
+        target_keywords = ['해커톤', 'hackathon', '공모전', '부트캠프', 'bootcamp', 'kdt', '교육', '양성']
+        seen_ids = set()
 
         for payload in queries:
             try:
                 res = requests.post("https://api.linkareer.com/graphql", json=payload, headers=gql_headers, timeout=15)
                 if res.status_code != 200: continue
+                
                 body = res.json()
-                if body.get('errors'):
-                    continue
+                if body.get('errors'): continue
 
-                # 응답에서 노드 추출 (구조 불명확하므로 재귀 탐색)
                 nodes = self._extract_nodes(body.get('data', {}))
                 if not nodes: continue
 
                 for node in nodes:
+                    nid = node.get('id', '')
+                    if not nid or nid in seen_ids: continue
+                    
                     title = node.get('title', '')
-                    cats = ' '.join(c.get('name','') for c in (node.get('categories') or []))
-                    if not any(k in title+cats for k in ['해커톤','Hackathon','hackathon','공모전']): continue
-                    nid = node.get('id','')
-                    due = (node.get('dueDate') or '')[:10]
-                    if due and due < today: continue
-                    if title:
+                    # 카테고리 이름들 추출
+                    cats_list = [c.get('name', '') for c in (node.get('categories') or [])]
+                    cats_str = ' '.join(cats_list).lower()
+                    full_text = (title + cats_str).lower()
+
+                    # 키워드 검사: 타겟 키워드가 포함되어 있는지 확인
+                    if any(k in full_text for k in target_keywords):
+                        due = (node.get('dueDate') or '')[:10]
+                        # 마감일 지난 공고 제외
+                        if due and due < today: continue
+                        
+                        seen_ids.add(nid)
+                        
+                        # 아이콘 및 접두사 결정 (부트캠프 우선)
+                        if any(bk in full_text for bk in ['부트캠프', 'bootcamp', 'kdt', '교육']):
+                            prefix = "🎓 [부트캠프]"
+                        else:
+                            prefix = "🇰🇷 [링커리어]"
+
                         results.append({
-                            "title": f"🇰🇷 [링커리어] {title}",
+                            "title": f"{prefix} {title}",
                             "url": f"https://linkareer.com/activity/{nid}",
                             "host": "Linkareer",
                             "date": due or "상세 확인"
                         })
-                if results:
-                    return results
             except Exception as e:
-                print(f"  Linkareer GraphQL 예외: {e}")
+                print(f"  Linkareer GraphQL 수집 중 예외: {e}")
 
         return results
 
@@ -485,7 +505,7 @@ class HackathonBot:
     # ─────────────────────────────────────────────────────
 
     def run(self):
-        print("🔍 해커톤 정보 수집을 시작합니다...")
+        print("🔍 해커톤 및 부트캠프 정보 수집을 시작합니다...")
         all_hackathons = []
         tasks = [
             ("Devpost",     self.fetch_devpost),
@@ -531,7 +551,7 @@ class HackathonBot:
                                   {"name": "마감/일정", "value": str(h['date']), "inline": True}]}
                       for h in chunk]
             requests.post(WEBHOOK_URL, json={
-                "content": "🚀 **새로운 해커톤 대회가 발견되었습니다!**" if i == 0 else "",
+                "content": "🚀 **새로운 소식이 발견되었습니다!**" if i == 0 else "",
                 "embeds": embeds
             })
 
