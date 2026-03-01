@@ -357,6 +357,48 @@ class HackathonBot:
                 print(f"부스트캠프 {course} 수집 실패: {e}")
         return results
 
+    def fetch_kt_techup(self):
+        """KT Cloud TECH UP K-디지털 트레이닝 부트캠프 모집 정보를 가져옵니다."""
+        try:
+            res = requests.get("https://ktcloud-techup.com/", headers=self.headers, timeout=15)
+            res.encoding = 'utf-8'
+            if res.status_code != 200:
+                return []
+            soup = BeautifulSoup(res.text, 'html.parser')
+            now = datetime.now()
+            # JSON-LD FAQPage에서 교육 일정 추출
+            start_date = end_date = None
+            for script in soup.find_all('script', type='application/ld+json'):
+                try:
+                    data = json.loads(script.string)
+                    if data.get('@type') != 'FAQPage':
+                        continue
+                    for qa in data.get('mainEntity', []):
+                        answer = qa.get('acceptedAnswer', {}).get('text', '')
+                        dates = re.findall(r'(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일', answer)
+                        if len(dates) >= 2:
+                            start_date = datetime(int(dates[0][0]), int(dates[0][1]), int(dates[0][2]))
+                            end_date = datetime(int(dates[1][0]), int(dates[1][1]), int(dates[1][2]))
+                            break
+                except Exception:
+                    pass
+                if start_date:
+                    break
+            # 교육 종료일이 지난 경우 건너뜀
+            if end_date and end_date < now:
+                return []
+            date_str = (f"{start_date.strftime('%Y.%m.%d')} ~ {end_date.strftime('%Y.%m.%d')}"
+                        if start_date and end_date else "상세 확인")
+            return [{
+                "title": "[KT Cloud TECH UP] 부트캠프 9개 트랙 모집 (K-디지털 트레이닝)",
+                "url": "https://ktcloud-techup.com/",
+                "host": "kt cloud TECH UP",
+                "date": date_str,
+            }]
+        except Exception as e:
+            print(f"KT Cloud TechUp 수집 실패: {e}")
+        return []
+
     def fetch_kt_aivle(self):
         """KT 에이블스쿨 주요소식 페이지에서 모집 공고를 가져옵니다."""
         try:
@@ -442,6 +484,7 @@ class HackathonBot:
             ("SSAFY", self.fetch_ssafy),
             ("우아한테크코스", self.fetch_woowacourse),
             ("부스트캠프", self.fetch_boostcamp),
+            ("KT Cloud TechUp", self.fetch_kt_techup),
             ("KT 에이블스쿨", self.fetch_kt_aivle),
         ]
 
