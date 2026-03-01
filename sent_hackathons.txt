@@ -935,3 +935,5 @@ AI기반 웹 접근제어 보안솔루션 양성과정 훈련생 모집
 AI사물인터넷 MCU기반(STM32,ESP32) 임베디드펌웨어 전문가양성(스마트팜 제작)
 [부스트캠프] AI Tech 8기 모집
 [부스트캠프] Web·Mobile 10기 모집
+HackAmerica
+DevNetwork [AI + ML] Hackathon 2026
