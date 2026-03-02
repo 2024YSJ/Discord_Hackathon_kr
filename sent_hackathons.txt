@@ -943,3 +943,4 @@ DevNetwork [AI + ML] Hackathon 2026
 [SSAFY] 삼성청년SW·AI아카데미 15기 모집공고
 [SSAFY] 삼성청년SW·AI아카데미 취업특강·모집설명회 안내
 [KT Cloud TECH UP] 부트캠프 9개 트랙 모집 (K-디지털 트레이닝)
+🇰🇷 [데브이벤트] THE Hackathon
