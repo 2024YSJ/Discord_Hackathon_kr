@@ -399,6 +399,99 @@ class HackathonBot:
             print(f"KT Cloud TechUp 수집 실패: {e}")
         return []
 
+    def fetch_boottent(self):
+        """부트텐트에서 Data/AI 카테고리 부트캠프 공고를 가져옵니다.
+        서버는 전체 캠프를 반환하므로 categories 필드로 클라이언트 필터링합니다.
+        """
+        try:
+            res = requests.get(
+                "https://boottent.com/camps",
+                headers=self.headers,
+                timeout=15,
+            )
+            if res.status_code != 200:
+                print(f"부트텐트: HTTP {res.status_code}")
+                return []
+
+            # Next.js RSC 스트림에서 campList 추출: self.__next_f.push([1, "...json..."]) 패턴
+            pushes = re.findall(r'self\.__next_f\.push\((\[.*?\])\)', res.text, re.DOTALL)
+            all_camps = []
+            for p in pushes:
+                if '\\"campList\\"' not in p:
+                    continue
+                try:
+                    inner = json.loads(p)[1]  # 이중 이스케이프 해제
+                    arr_str = self._extract_json_array(inner, 'campList')
+                    if arr_str:
+                        all_camps = json.loads(arr_str)
+                except Exception:
+                    pass
+                break
+
+            if not all_camps:
+                print("부트텐트: campList 데이터 없음")
+                return []
+
+            today = datetime.now().strftime('%Y-%m-%d')
+            target_cats = {'data', 'ai'}
+            results = []
+            for camp in all_camps:
+                if not set(camp.get('categories', [])) & target_cats:
+                    continue
+                camp_id = camp.get('campId', '')
+                batch_id = camp.get('batchId', '')
+                title = camp.get('title', '').strip()
+                end_date = camp.get('endDate', '')
+                start_date = camp.get('startDate', '')
+                if not title or not camp_id:
+                    continue
+                if end_date and end_date < today:
+                    continue
+                url = (f"https://boottent.com/camps/{camp_id}_{batch_id}"
+                       if batch_id else f"https://boottent.com/camps/{camp_id}")
+                date_str = (f"{start_date} ~ {end_date}" if start_date and end_date
+                            else end_date or start_date or "상세 확인")
+                results.append({
+                    "title": f"[부트텐트] {title}",
+                    "url": url,
+                    "host": "부트텐트 (boottent.com)",
+                    "date": f"마감: {date_str}",
+                })
+            return results
+        except Exception as e:
+            print(f"부트텐트 수집 실패: {e}")
+        return []
+
+    def _extract_json_array(self, s, key):
+        """문자열 s에서 key에 해당하는 JSON 배열을 괄호 매칭으로 추출합니다."""
+        pattern = f'"{key}":'
+        idx = s.find(pattern)
+        if idx == -1:
+            return None
+        start = s.index('[', idx + len(pattern))
+        depth, in_string, escape = 1, False, False
+        backslash = chr(92)
+        for i in range(start + 1, len(s)):
+            c = s[i]
+            if escape:
+                escape = False
+                continue
+            if c == backslash and in_string:
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == '[':
+                depth += 1
+            elif c == ']':
+                depth -= 1
+                if depth == 0:
+                    return s[start:i + 1]
+        return None
+
     def fetch_kt_aivle(self):
         """KT 에이블스쿨 주요소식 페이지에서 모집 공고를 가져옵니다."""
         try:
@@ -486,6 +579,7 @@ class HackathonBot:
             ("부스트캠프", self.fetch_boostcamp),
             ("KT Cloud TechUp", self.fetch_kt_techup),
             ("KT 에이블스쿨", self.fetch_kt_aivle),
+            ("부트텐트", self.fetch_boottent),
         ]
 
         for name, fetcher in tasks:
