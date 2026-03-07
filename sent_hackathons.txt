@@ -1141,3 +1141,6 @@ HackPrinceton Spring 2026
 RocketHacks 2026
 HackDavis 2026 Hackathon
 [부트텐트] 생성형AI와 챗GPT를 활용한 빅데이터 분석 & 자동화 시스템 구축
+BISV Hacks 2026
+UWB Hacks 26: The Future!
+[부트텐트] [IBM x RedHat] AI Transformation - AX Academy
