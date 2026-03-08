@@ -1144,3 +1144,4 @@ HackDavis 2026 Hackathon
 BISV Hacks 2026
 UWB Hacks 26: The Future!
 [부트텐트] [IBM x RedHat] AI Transformation - AX Academy
+United Hacks V7
