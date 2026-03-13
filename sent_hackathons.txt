@@ -1167,3 +1167,9 @@ Hook 'Em Hacks
 [부트텐트] SQL 데이터 분석 캠프 | 마스터반
 [부트텐트] SQL 데이터 분석 캠프 | 실전반
 [부트텐트] SQL 데이터 분석 캠프 | 입문+실전
+UNIHACK 2026, funded by the European Union
+JACHacks 2026
+🇰🇷 [캠퍼스픽] 프로토콜 캠프 9기 웹3 빌더 모집 (ShardLab × Hashed)
+🇰🇷 [캠퍼스픽] 2026 스마일게이트 인디게임 창작 공모전 &lt;IndieGo>
+[부트텐트] 인공지능 응용시스템 개발자
+[부트텐트] MBC AI 데이터 저널리즘 전문가 과정
